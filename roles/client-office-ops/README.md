@@ -1,4 +1,4 @@
-# operations-manager
+# client-office-ops
 
 Папка роли. Содержимое:
 - CLAUDE.md — общая личность ассистента

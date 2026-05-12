@@ -14,7 +14,7 @@
 ## Установка (для сотрудника)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.sh | bash -s doc-manager
+curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.sh | bash -s doc-fin-ops
 ```
 
 > install.sh — пока заглушка, реальная установка появится после того, как пилот этой роли пройдёт первый круг использования.

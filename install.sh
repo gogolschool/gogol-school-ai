@@ -9,11 +9,11 @@ set -euo pipefail
 ROLE="${1:-}"
 if [[ -z "$ROLE" ]]; then
   echo "Usage: install.sh <role-slug>"
-  echo "Available roles: doc-manager, operations-manager, head-admin, rop, senior-admin,"
+  echo "Available roles: doc-fin-ops, client-office-ops, head-admin, rop, senior-admin,"
   echo "                 marketing-assistant, smm, brand-pr, product-manager,"
   echo "                 student-comms, product-assistant"
   exit 1
 fi
 
 echo "Установка роли: $ROLE"
-echo "(скрипт пока в разработке — реальная установка появится после пилота doc-manager)"
+echo "(скрипт пока в разработке — реальная установка появится после пилота doc-fin-ops)"

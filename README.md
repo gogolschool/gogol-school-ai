@@ -8,14 +8,14 @@ AI-ассистенты для сотрудников Gogol School: CLAUDE.md, M
 
 ```
 roles/
-  doc-manager/            ← Менеджер по документообороту
+  doc-fin-ops/            ← Менеджер по документообороту
     CLAUDE.md             ← общая личность ассистента
     ozma.md               ← как работать с OzmaDB
     .mcp.json             ← список подключаемых MCP-серверов
     skills/
       bank/SKILL.md       ← /bank — внесение банковской выписки
       newcontract/SKILL.md
-  operations-manager/     ← Менеджер по операциям
+  client-office-ops/     ← Менеджер по операциям
   head-admin/             ← Главный администратор
   rop/                    ← РОП
   senior-admin/           ← Старший администратор
@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/in
 Например, для менеджера по документообороту:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.sh | bash -s doc-manager
+curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.sh | bash -s doc-fin-ops
 ```
 
 Скрипт скачает нужные файлы роли и положит в `~/.claude/`.
