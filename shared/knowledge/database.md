@@ -368,6 +368,30 @@
 - `REFUNDED` — полный возврат
 - `PARTIAL_REFUNDED` — частичный возврат
 
+### ⚠️ Правила подсчёта дохода, возвратов и выручки (КРИТИЧНО)
+
+Эти правила нужно использовать **всегда**, когда задаётся вопрос про доход / возвраты / выручку. Не отступать от них без явного запроса.
+
+**Статус `Ожидается оплата` НИКОГДА не учитывается** — игнорировать.
+
+Поле-ключ к различию входящих и исходящих платежей — **`from_our_organization`** в `fin.transactions`:
+- `from_our_organization = false` → деньги идут **в Gogol School** (от клиента/контрагента)
+- `from_our_organization = true` → деньги идут **из Gogol School** (наружу, например возврат клиенту)
+
+#### Доход
+Транзакции с `tks_state IN ('CONFIRMED', 'AUTHORIZED')` **И** `from_our_organization = false`.
+
+#### Возвраты
+Транзакции с `tks_state IN ('CONFIRMED', 'REFUNDED', 'PARTIAL_REFUNDED')` **И** `from_our_organization = true`.
+
+#### Выручка (revenue)
+```
+выручка = SUM(amount) WHERE tks_state IN ('CONFIRMED', 'AUTHORIZED') AND from_our_organization = false
+        − SUM(amount) WHERE tks_state IN ('CONFIRMED', 'REFUNDED', 'PARTIAL_REFUNDED') AND from_our_organization = true
+```
+
+То есть: **доход минус возвраты**. Статус `CONFIRMED` появляется в обеих частях формулы — различие только по `from_our_organization`.
+
 ### Actions
 
 #### `approve_transaction`
