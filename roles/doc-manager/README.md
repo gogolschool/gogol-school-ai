@@ -1,9 +1,24 @@
-# doc-manager
+# Менеджер по документообороту
 
-Папка роли. Содержимое:
-- CLAUDE.md — общая личность ассистента
-- ozma.md / bitrix.md — контекст под конкретные системы
-- .mcp.json — список MCP-серверов
-- skills/ — slash-команды
+Продажи, договоры, банковские выписки. Работает в OzmaDB + Bitrix.
 
-Пока пусто — заполняется по мере проработки роли.
+## Файлы
+
+- **[CLAUDE.md](CLAUDE.md)** — личность ассистента, обязанности, правила
+- **[ozma.md](ozma.md)** — контекст по OzmaDB под эту роль (схемы, views, actions)
+- **[.mcp.json](.mcp.json)** — список MCP-серверов, которые нужны роли
+- **`skills/`** — slash-команды:
+  - **[`/bank`](skills/bank/SKILL.md)** — внесение банковской выписки в `fin.economics`
+  - **[`/newcontract`](skills/newcontract/SKILL.md)** — генерация договора оказания услуг
+
+## Установка (для сотрудника)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.sh | bash -s doc-manager
+```
+
+> install.sh — пока заглушка, реальная установка появится после того, как пилот этой роли пройдёт первый круг использования.
+
+## Витрина в Notion
+
+[🤖 AI роли → Менеджер по документообороту](https://www.notion.so/35e612c762af811d8b79c5c0e8b6a2bf)
