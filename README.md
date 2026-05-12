@@ -21,14 +21,12 @@ roles/
     skills/
       bank/SKILL.md       ← /bank — внесение банковской выписки
       newcontract/SKILL.md
-  client-office-ops/      ← Клиентский офис + операции
-  head-admin/             ← Главный администратор
-  rop/                    ← РОП
-  senior-admin/           ← Старший администратор
-  marketing-assistant/    ← Ассистент маркетинга
+  client-office-ops/      ← Операционный менеджер
+  senior-admin/           ← Администратор
+  marketing-assistant/    ← Менеджер по маркетингу
   smm/                    ← СММ
   brand-pr/               ← Бренд-менеджер + PR
-  product-manager/        ← Менеджер внутренних проектов
+  product-manager/        ← Менеджер программ
   student-comms/          ← Менеджер по общению со студентами
   product-assistant/      ← Помощник менеджера продукта
 

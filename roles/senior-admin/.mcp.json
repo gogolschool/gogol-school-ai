@@ -1,0 +1,20 @@
+{
+  "_comment": "MCP-серверы для роли senior-admin (администратор).",
+  "mcpServers": {
+    "ozma": {
+      "_purpose": "OzmaDB — координация смен, учёт студентов, расписание."
+    },
+    "notion": {
+      "_purpose": "Мастер-промпты, регламенты, документация процессов."
+    },
+    "google-sheets": {
+      "_purpose": "Google Sheets — графики смен, учётные таблицы."
+    },
+    "google-drive": {
+      "_purpose": "Google Drive — документы, файлы."
+    },
+    "unisender": {
+      "_purpose": "Email-рассылки — уведомления клиентам, студентам."
+    }
+  }
+}

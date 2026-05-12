@@ -1,0 +1,20 @@
+{
+  "_comment": "MCP-серверы для роли marketing-assistant (менеджер по маркетингу).",
+  "mcpServers": {
+    "ozma": {
+      "_purpose": "OzmaDB — маркетинговые списки, кампании, сегментация контактов."
+    },
+    "notion": {
+      "_purpose": "Tone of voice, мастер-промпты, бренд-материалы."
+    },
+    "google-sheets": {
+      "_purpose": "Google Sheets — отчёты, планы, аналитика."
+    },
+    "google-drive": {
+      "_purpose": "Google Drive — креативы, материалы кампаний."
+    },
+    "unisender": {
+      "_purpose": "Email-рассылки — отправка кампаний."
+    }
+  }
+}

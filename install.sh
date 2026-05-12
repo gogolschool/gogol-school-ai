@@ -9,7 +9,7 @@ set -euo pipefail
 ROLE="${1:-}"
 if [[ -z "$ROLE" ]]; then
   echo "Usage: install.sh <role-slug>"
-  echo "Available roles: doc-fin-ops, client-office-ops, head-admin, rop, senior-admin,"
+  echo "Available roles: doc-fin-ops, client-office-ops, senior-admin,"
   echo "                 marketing-assistant, smm, brand-pr, product-manager,"
   echo "                 student-comms, product-assistant"
   exit 1

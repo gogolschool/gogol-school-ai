@@ -2,20 +2,19 @@
   "_comment": "MCP-серверы, которые ставятся для роли doc-fin-ops. Реальные команды/токены подтягиваются установщиком из локального ~/.env пользователя — здесь только список и назначение.",
   "mcpServers": {
     "ozma": {
-      "_purpose": "OzmaDB — fin.economics, fin.transactions, crm, reports. Основная рабочая база.",
-      "_required": true
-    },
-    "ozma-gelfand": {
-      "_purpose": "Вторая инстанция Ozma (отдельная база). Подключать, если задача про gelfand-инстанцию.",
-      "_required": false
+      "_purpose": "OzmaDB — fin, crm, reports, base. Основная рабочая база."
     },
     "gogol-school-site": {
-      "_purpose": "Bitrix gogolschool.ru — заказы Tinkoff (iblock 14), услуги (iblock 16), промокоды (iblock 17).",
-      "_required": true
+      "_purpose": "Bitrix gogolschool.ru — заказы Tinkoff (iblock 14), услуги (iblock 16), промокоды (iblock 17)."
     },
     "notion": {
-      "_purpose": "Чтение мастер-промптов из prompt library и обновление карточек продуктов.",
-      "_required": true
+      "_purpose": "Чтение мастер-промптов из prompt library и обновление карточек продуктов."
+    },
+    "google-sheets": {
+      "_purpose": "Google Sheets — когортная аналитика, сверки, выгрузки."
+    },
+    "google-drive": {
+      "_purpose": "Google Drive — документы, файлы (договоры, выписки, прочие документы)."
     }
   }
 }

@@ -1,0 +1,17 @@
+{
+  "_comment": "MCP-серверы для роли brand-pr (бренд-менеджер + PR).",
+  "mcpServers": {
+    "ozma": {
+      "_purpose": "OzmaDB — данные для контента, отчётов, кейсов."
+    },
+    "notion": {
+      "_purpose": "Брендбук, tone of voice, PR-материалы."
+    },
+    "google-sheets": {
+      "_purpose": "Google Sheets — планы публикаций, отчётность."
+    },
+    "google-drive": {
+      "_purpose": "Google Drive — креативы, фото, бренд-ассеты."
+    }
+  }
+}

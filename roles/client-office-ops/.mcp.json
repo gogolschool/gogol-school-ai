@@ -1,0 +1,26 @@
+{
+  "_comment": "MCP-серверы для роли client-office-ops (клиентский офис + операции).",
+  "mcpServers": {
+    "ozma": {
+      "_purpose": "OzmaDB — проверка транзакций, возвраты, бонусы, бартер."
+    },
+    "gogol-school-site": {
+      "_purpose": "Bitrix — заказы, услуги, промокоды для сверки и операций."
+    },
+    "notion": {
+      "_purpose": "Мастер-промпты, документация по процессам."
+    },
+    "telegram": {
+      "_purpose": "Telegram @gs_corporate — коммуникация со студентами при возвратах, бартере, бонусах."
+    },
+    "google-sheets": {
+      "_purpose": "Google Sheets — реестры, сверки."
+    },
+    "google-drive": {
+      "_purpose": "Google Drive — файлы, документы."
+    },
+    "unisender": {
+      "_purpose": "Email-рассылки — уведомления клиентам."
+    }
+  }
+}

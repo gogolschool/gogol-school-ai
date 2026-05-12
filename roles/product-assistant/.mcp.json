@@ -1,0 +1,17 @@
+{
+  "_comment": "MCP-серверы для роли product-assistant (помощник менеджера продукта).",
+  "mcpServers": {
+    "ozma": {
+      "_purpose": "OzmaDB — поддержка задач продакта: продукты, заявки, отчёты."
+    },
+    "notion": {
+      "_purpose": "Документация, мастер-промпты, карточки продуктов."
+    },
+    "google-sheets": {
+      "_purpose": "Google Sheets — таблицы, выгрузки."
+    },
+    "google-drive": {
+      "_purpose": "Google Drive — материалы."
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "_comment": "MCP-серверы для роли student-comms (менеджер по общению со студентами).",
+  "mcpServers": {
+    "ozma": {
+      "_purpose": "OzmaDB — данные студентов, заявки, история."
+    },
+    "telegram": {
+      "_purpose": "Telegram @gs_corporate — коммуникация со студентами, разбор диалогов."
+    },
+    "notion": {
+      "_purpose": "Скрипты общения, мастер-промпты, knowledge base."
+    },
+    "google-sheets": {
+      "_purpose": "Google Sheets — таблицы по студентам, фидбэки."
+    },
+    "google-drive": {
+      "_purpose": "Google Drive — документы, материалы."
+    }
+  }
+}

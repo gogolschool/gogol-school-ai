@@ -1,0 +1,17 @@
+{
+  "_comment": "MCP-серверы для роли product-manager (менеджер программ).",
+  "mcpServers": {
+    "ozma": {
+      "_purpose": "OzmaDB — продукты, заявки, расписание, аналитика."
+    },
+    "notion": {
+      "_purpose": "Карточки продуктов, prompt library, документация."
+    },
+    "google-sheets": {
+      "_purpose": "Google Sheets — планы, бюджеты, наборы."
+    },
+    "google-drive": {
+      "_purpose": "Google Drive — материалы, документы программ."
+    }
+  }
+}
