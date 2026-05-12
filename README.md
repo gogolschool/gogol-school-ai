@@ -30,10 +30,13 @@ roles/
   student-comms/          ← Менеджер по общению со студентами
   product-assistant/      ← Помощник менеджера продукта
 
-install.sh                ← скрипт установки для сотрудника
+install.sh                ← установщик для macOS / Linux
+install.ps1               ← установщик для Windows
 ```
 
 ## Установка ассистента (для сотрудника)
+
+### macOS / Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.sh | bash -s <role-slug>
@@ -45,12 +48,20 @@ curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/in
 curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.sh | bash -s doc-fin-ops
 ```
 
-Скрипт скачает нужные файлы роли и положит в `~/.claude/`.
+### Windows (PowerShell)
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.ps1 -OutFile $env:TEMP\install.ps1
+& $env:TEMP\install.ps1 -Role doc-fin-ops
+```
+
+### Что делает скрипт
+
+1. Проверяет node, npm, git, claude (на Windows ещё python).
+2. Скачивает/обновляет конфигурацию роли в `~/.gogol-ai/repo`.
+3. Копирует `CLAUDE.md`, `knowledge/`, `ozma.md`, `skills/` в `~/.claude/`.
+4. Для каждого MCP роли спрашивает токены (один раз, кеш в `~/.gogol-ai/.env`) и прописывает сервер в Claude Desktop + Claude Code.
 
 ## Обновление
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.sh | bash -s <role-slug>
-```
-
-Та же команда — install.sh идемпотентный, повторный запуск подтягивает свежую версию.
+Запустить ту же команду повторно — скрипт идемпотентный, подтянет свежую версию и не будет переспрашивать уже введённые токены.
