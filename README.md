@@ -37,7 +37,7 @@ install.ps1               ← установщик для Windows
 
 ## Установка ассистента (для сотрудника)
 
-Можно ставить **одну или несколько ролей сразу**. Каждая роль создаёт свою рабочую папку `~/gogol-ai/<role>/`, переключение между ролями — это `cd` в нужную папку.
+Можно ставить **одну или несколько ролей в общую рабочую папку**. Сотрудник всегда работает из этой одной папки — даже если у него мультироль.
 
 ### macOS / Linux
 
@@ -46,9 +46,14 @@ install.ps1               ← установщик для Windows
 curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.sh | bash -s doc-fin-ops
 ```
 
-Несколько ролей сразу:
+Несколько ролей в одну папку:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.sh | bash -s doc-fin-ops analyst client-office-ops
+```
+
+Кастомное имя папки:
+```bash
+curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.sh | bash -s -- --folder bella doc-fin-ops analyst
 ```
 
 ### Windows (PowerShell)
@@ -56,6 +61,8 @@ curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/in
 ```powershell
 iwr -useb https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.ps1 -OutFile $env:TEMP\install.ps1
 & $env:TEMP\install.ps1 -Roles doc-fin-ops,analyst
+# или с кастомным именем:
+& $env:TEMP\install.ps1 -Roles doc-fin-ops,analyst -Folder bella
 ```
 
 ### Как это раскладывается на машине
@@ -63,42 +70,45 @@ iwr -useb https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/ins
 ```
 ~/.claude/                   ← глобально (читается во всех сессиях Claude)
   CLAUDE.md                  ← общий контекст про Gogol School
-  knowledge/                 ← shared/knowledge/* (systems.md, database.md)
-  marketing.md               ← если установлена маркетинговая роль
+  knowledge/                 ← systems.md, database.md
+  marketing.md               ← бренд (для всех ролей доступно)
 
-~/gogol-ai/                  ← видимая папка с рабочими ролями
-  doc-fin-ops/
-    CLAUDE.md                ← специфика роли
-    ozma.md
-    .claude/skills/          ← /bank, /newcontract
-  analyst/
-    CLAUDE.md                ← правила LTV/Retention
-    .claude/skills/
-  client-office-ops/
-    CLAUDE.md
-    .claude/skills/
+~/gogol-ai/work/             ← рабочая папка (default name: work)
+  CLAUDE.md                  ← склеенный из CLAUDE.md всех выбранных ролей
+  ozma.md                    ← склеен, если у нескольких ролей есть
+  .claude/skills/            ← все скилы из всех выбранных ролей
+    bank/                    ← из doc-fin-ops
+    newcontract/             ← из doc-fin-ops
+    refund/                  ← из client-office-ops
+    ...
 
-~/.gogol-ai/                 ← скрытая папка с тех. данными
+~/.gogol-ai/                 ← скрытое (тех. данные)
   repo/                      ← клон gogol-school-ai
   .env                       ← токены MCP
-  google_token.json          ← Google service account
+  google_token.json
 ```
 
-### Как работать с ролью
+### Как работать
 
 ```bash
-cd ~/gogol-ai/doc-fin-ops    # переключилась на документооборот
-claude                       # Claude видит CLAUDE.md роли + общий контекст
+cd ~/gogol-ai/work          # всегда одна папка
+claude                       # Claude видит CLAUDE.md всех твоих ролей + общий контекст
 ```
 
-В другой роли:
+В чате доступны скилы всех ролей: `/bank`, `/newcontract`, `/refund` и т.д. — что у тебя установлено.
+
+MCP-серверы глобальны: доступны из любой папки, не нужно настраивать дважды.
+
+## Обновление и добавление ролей
+
+Запусти ту же команду:
+- **С тем же списком** — подтянет свежие файлы из git
+- **С расширенным списком** — добавит новые роли в ту же папку
+
 ```bash
-cd ~/gogol-ai/analyst
-claude                       # Claude видит правила аналитики, нет /bank
+# Было: doc-fin-ops + analyst
+# Стало: + marketing-assistant
+bash install.sh doc-fin-ops analyst marketing-assistant
 ```
 
-MCP-серверы (ozma, gogol-site-remote и т.д.) глобальны — доступны из любой роли.
-
-## Обновление
-
-Запустить ту же команду повторно. Скрипт идемпотентный: подтянет свежие файлы из git, не будет переспрашивать токены. Можно дозапустить с новыми ролями, чтобы добавить их к существующим.
+Токены не переспрашиваются — кэшируются в `~/.gogol-ai/.env`.

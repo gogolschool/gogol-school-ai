@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Gogol School AI — установщик ролей (мульти-роль).
+# Gogol School AI — установщик ролей.
 #
 # Использование:
-#   curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.sh | bash -s <role1> [role2] [role3]...
+#   curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.sh | bash -s <role1> [role2]...
+#   curl -fsSL ... | bash -s -- --folder <name> <role1> [role2]...
+#
+# По умолчанию создаётся одна объединённая рабочая папка ~/gogol-ai/work/
+# с CLAUDE.md и skills всех выбранных ролей. Сотрудник работает оттуда.
 #
 # Доступные роли:
 #   doc-fin-ops, client-office-ops, senior-admin, marketing-assistant,
@@ -12,14 +16,15 @@ set -euo pipefail
 
 # ─── Константы ──────────────────────────────────────────────────────────────
 REPO_URL="https://github.com/gogolschool/gogol-school-ai.git"
-GOGOL_DIR="$HOME/.gogol-ai"          # скрытая папка: репо, токены
+GOGOL_DIR="$HOME/.gogol-ai"
 REPO_DIR="$GOGOL_DIR/repo"
 ENV_FILE="$GOGOL_DIR/.env"
 GOOGLE_TOKEN_PATH="$GOGOL_DIR/google_token.json"
-ROLES_DIR="$HOME/gogol-ai"           # видимая папка: рабочие папки ролей
+ROLES_DIR="$HOME/gogol-ai"
 CLAUDE_DIR="$HOME/.claude"
 CLAUDE_DESKTOP_CFG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
 NOTION_TOKENS_HINT="Notion → 🔐 Токены MCP"
+FOLDER_NAME="work"
 
 # ─── Цвета ──────────────────────────────────────────────────────────────────
 red()    { printf "\033[31m%s\033[0m\n" "$*"; }
@@ -27,25 +32,38 @@ green()  { printf "\033[32m%s\033[0m\n" "$*"; }
 yellow() { printf "\033[33m%s\033[0m\n" "$*"; }
 bold()   { printf "\033[1m%s\033[0m\n" "$*"; }
 
-# ─── Аргументы (одна или несколько ролей) ──────────────────────────────────
-ROLES=("$@")
+# ─── Парсинг аргументов ─────────────────────────────────────────────────────
+ROLES=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --folder)
+      FOLDER_NAME="$2"; shift 2 ;;
+    --help|-h)
+      echo "Использование: bash install.sh [--folder <name>] <role1> [role2]..."
+      echo "По умолчанию папка: ~/gogol-ai/work/"
+      exit 0 ;;
+    *)
+      ROLES+=("$1"); shift ;;
+  esac
+done
+
 if [[ ${#ROLES[@]} -eq 0 ]]; then
   red "Не указано ни одной роли."
-  echo "Использование: bash install.sh <role1> [role2] [role3]..."
+  echo "Использование: bash install.sh [--folder <name>] <role1> [role2]..."
   echo "Доступные: doc-fin-ops, client-office-ops, senior-admin, marketing-assistant,"
   echo "           smm, brand-pr, product-manager, student-comms, product-assistant, analyst"
   exit 1
 fi
 
-bold "🚀 Установка AI-ассистента для ролей: ${ROLES[*]}"
+WORK_DIR="$ROLES_DIR/$FOLDER_NAME"
+
+bold "🚀 Установка ролей в ~/gogol-ai/$FOLDER_NAME/: ${ROLES[*]}"
 echo
 
 # ─── Проверка зависимостей ─────────────────────────────────────────────────
 check_dep() {
   if ! command -v "$1" >/dev/null 2>&1; then
-    red "✗ Не найден: $1"
-    echo "  $2"
-    return 1
+    red "✗ Не найден: $1"; echo "  $2"; return 1
   fi
   green "✓ $1"
 }
@@ -56,7 +74,7 @@ check_dep node "brew install node" || MISSING=1
 check_dep npm "идёт с node" || MISSING=1
 check_dep git "brew install git" || MISSING=1
 check_dep claude "https://claude.com/download" || MISSING=1
-(( MISSING )) && { red "Установи отсутствующие компоненты и запусти снова."; exit 1; }
+(( MISSING )) && { red "Установи отсутствующие компоненты."; exit 1; }
 echo
 
 # ─── Клонирование/обновление репо ──────────────────────────────────────────
@@ -71,11 +89,10 @@ else
 fi
 echo
 
-# Проверим, что все указанные роли существуют
+# Проверим, что роли существуют
 for role in "${ROLES[@]}"; do
   if [[ ! -d "$REPO_DIR/roles/$role" ]]; then
-    red "Роль '$role' не найдена в репозитории."
-    exit 1
+    red "Роль '$role' не найдена."; exit 1
   fi
 done
 
@@ -83,15 +100,12 @@ done
 bold "📝 Установка общего контекста (~/.claude/)"
 mkdir -p "$CLAUDE_DIR/knowledge"
 
-# shared/CLAUDE.md → ~/.claude/CLAUDE.md (общий, без специфики ролей)
 cp "$REPO_DIR/shared/CLAUDE.md" "$CLAUDE_DIR/CLAUDE.md"
 green "✓ ~/.claude/CLAUDE.md (общий контекст)"
 
-# shared/knowledge/ → ~/.claude/knowledge/
 cp -R "$REPO_DIR/shared/knowledge/." "$CLAUDE_DIR/knowledge/"
 green "✓ ~/.claude/knowledge/"
 
-# Остальные shared/*.md (marketing.md и т.п.)
 for shared_file in "$REPO_DIR/shared"/*.md; do
   base=$(basename "$shared_file")
   [[ "$base" == "CLAUDE.md" ]] && continue
@@ -100,57 +114,92 @@ for shared_file in "$REPO_DIR/shared"/*.md; do
 done
 echo
 
-# ─── Шаг 2: рабочая папка для каждой роли ─────────────────────────────────
-bold "📁 Установка рабочих папок ролей (~/gogol-ai/<role>/)"
-mkdir -p "$ROLES_DIR"
+# ─── Шаг 2: объединённая рабочая папка ─────────────────────────────────────
+bold "📁 Сборка рабочей папки ~/gogol-ai/$FOLDER_NAME/"
 
+# Чистим только то, что генерируется (CLAUDE.md, ozma.md, skills/) —
+# не трогаем личные файлы пользователя, если он что-то туда положил.
+rm -f "$WORK_DIR/CLAUDE.md" "$WORK_DIR/ozma.md"
+rm -rf "$WORK_DIR/.claude/skills"
+mkdir -p "$WORK_DIR/.claude/skills"
+
+# ── CLAUDE.md: склейка всех CLAUDE.md выбранных ролей ──
+{
+  echo "# Рабочая папка: $FOLDER_NAME"
+  echo
+  echo "Активные роли: **${ROLES[*]}**"
+  echo
+  echo "Общий контекст про Gogol School — в \`~/.claude/CLAUDE.md\` (загружается автоматически). Ниже — специфика выбранных ролей."
+  echo
+  for role in "${ROLES[@]}"; do
+    role_md="$REPO_DIR/roles/$role/CLAUDE.md"
+    if [[ -f "$role_md" ]]; then
+      echo "---"
+      echo
+      echo "# === Роль: $role ==="
+      echo
+      cat "$role_md"
+      echo
+    fi
+  done
+} > "$WORK_DIR/CLAUDE.md"
+green "✓ $WORK_DIR/CLAUDE.md (склейка ${#ROLES[@]} ролей)"
+
+# ── ozma.md: склейка, если несколько; иначе копия ──
+ozma_count=0
 for role in "${ROLES[@]}"; do
-  src="$REPO_DIR/roles/$role"
-  dst="$ROLES_DIR/$role"
-  mkdir -p "$dst/.claude/skills"
-
-  # CLAUDE.md специфика роли
-  if [[ -f "$src/CLAUDE.md" ]]; then
-    cp "$src/CLAUDE.md" "$dst/CLAUDE.md"
-  fi
-
-  # ozma.md если есть
-  if [[ -f "$src/ozma.md" ]]; then
-    cp "$src/ozma.md" "$dst/ozma.md"
-  fi
-
-  # README роли — для ориентира
-  if [[ -f "$src/README.md" ]]; then
-    cp "$src/README.md" "$dst/README.md"
-  fi
-
-  # skills роли → <dst>/.claude/skills/
-  if [[ -d "$src/skills" ]]; then
-    cp -R "$src/skills/." "$dst/.claude/skills/"
-  fi
-
-  green "✓ ~/gogol-ai/$role/"
+  [[ -f "$REPO_DIR/roles/$role/ozma.md" ]] && ((ozma_count++)) || true
 done
+if (( ozma_count == 1 )); then
+  for role in "${ROLES[@]}"; do
+    [[ -f "$REPO_DIR/roles/$role/ozma.md" ]] && cp "$REPO_DIR/roles/$role/ozma.md" "$WORK_DIR/ozma.md"
+  done
+  green "✓ $WORK_DIR/ozma.md"
+elif (( ozma_count > 1 )); then
+  {
+    echo "# Контекст по OzmaDB (объединённый из ролей)"
+    echo
+    for role in "${ROLES[@]}"; do
+      ozma_md="$REPO_DIR/roles/$role/ozma.md"
+      if [[ -f "$ozma_md" ]]; then
+        echo "---"
+        echo "## === Роль: $role ==="
+        echo
+        cat "$ozma_md"
+        echo
+      fi
+    done
+  } > "$WORK_DIR/ozma.md"
+  green "✓ $WORK_DIR/ozma.md (склейка из $ozma_count ролей)"
+fi
+
+# ── skills: копируем все из всех ролей в .claude/skills/ ──
+skill_total=0
+for role in "${ROLES[@]}"; do
+  src="$REPO_DIR/roles/$role/skills"
+  [[ ! -d "$src" ]] && continue
+  for skill_dir in "$src"/*/; do
+    [[ ! -d "$skill_dir" ]] && continue
+    skill_name=$(basename "$skill_dir")
+    cp -R "$skill_dir" "$WORK_DIR/.claude/skills/$skill_name"
+    ((skill_total++))
+  done
+done
+green "✓ $WORK_DIR/.claude/skills/ ($skill_total скилов)"
 echo
 
 # ─── Шаг 3: токены и MCP ───────────────────────────────────────────────────
-touch "$ENV_FILE"
-chmod 600 "$ENV_FILE"
+touch "$ENV_FILE"; chmod 600 "$ENV_FILE"
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 
 ask_secret() {
-  local var_name="$1"
-  local hint="$2"
-  local hide="${3:-yes}"
+  local var_name="$1" hint="$2" hide="${3:-yes}"
   local current="${!var_name:-}"
-  if [[ -n "$current" ]]; then return 0; fi
-  echo
-  yellow "▸ $var_name"
-  echo "  $hint"
+  [[ -n "$current" ]] && return 0
+  echo; yellow "▸ $var_name"; echo "  $hint"
   if [[ "$hide" == "yes" ]]; then
-    read -r -s -p "  значение: " value
-    echo
+    read -r -s -p "  значение: " value; echo
   else
     read -r -p "  значение: " value
   fi
@@ -158,7 +207,6 @@ ask_secret() {
   export "$var_name=$value"
 }
 
-# Собираем объединение MCP-серверов по всем выбранным ролям
 declare -A MCP_NEEDED
 for role in "${ROLES[@]}"; do
   mcp_json="$REPO_DIR/roles/$role/.mcp.json"
@@ -169,9 +217,9 @@ for role in "${ROLES[@]}"; do
 done
 
 if [[ ${#MCP_NEEDED[@]} -eq 0 ]]; then
-  yellow "У выбранных ролей нет MCP-серверов — пропускаю настройку."
+  yellow "У выбранных ролей нет MCP-серверов."
 else
-  bold "🔌 Настройка MCP-серверов (объединённый список по ролям)"
+  bold "🔌 Настройка MCP-серверов (общий список по выбранным ролям)"
   echo "Токены брать из: $NOTION_TOKENS_HINT"
 fi
 
@@ -187,16 +235,14 @@ data.setdefault("mcpServers", {})[name] = json.loads(cfg)
 json.dump(data, open(path, "w"), indent=2, ensure_ascii=False)
 PYEOF
 }
-
 register_mcp_code() {
-  local name="$1"
-  shift
+  local name="$1"; shift
   claude mcp remove --scope user "$name" >/dev/null 2>&1 || true
   claude mcp add --scope user "$name" -- "$@"
 }
 
 setup_ozma() {
-  ask_secret OZMA_BEARER "Bearer-токен Ozma MCP (общий, из $NOTION_TOKENS_HINT)"
+  ask_secret OZMA_BEARER "Bearer-токен Ozma MCP (из $NOTION_TOKENS_HINT)"
   ask_secret OZMA_CLIENT_SECRET "Client Secret Ozma (из $NOTION_TOKENS_HINT)"
   ask_secret OZMA_USERNAME "Твой логин в Ozma (email)" no
   ask_secret OZMA_PASSWORD "Твой пароль в Ozma"
@@ -222,9 +268,8 @@ print(json.dumps({'command':'npx','args':['-y','mcp-remote','$url',
     --header "X-Ozma-Password: $OZMA_PASSWORD"
   green "✓ ozma"
 }
-
 setup_gogol_site() {
-  ask_secret SITE_BEARER "Bearer-токен gogol-site-remote (из $NOTION_TOKENS_HINT)"
+  ask_secret SITE_BEARER "Bearer-токен gogol-site-remote"
   local url="https://ozma.gogol.school/site_mcp/mcp"
   local cfg=$(python3 -c "
 import json
@@ -234,9 +279,8 @@ print(json.dumps({'command':'npx','args':['-y','mcp-remote','$url','--header','A
     --header "Authorization: Bearer $SITE_BEARER"
   green "✓ gogol-site-remote"
 }
-
 setup_unisender() {
-  ask_secret UNISENDER_TOKEN "Токен unisender (из $NOTION_TOKENS_HINT)"
+  ask_secret UNISENDER_TOKEN "Токен unisender"
   local url="http://ozma.gogol.school:8002/mcp/?token=$UNISENDER_TOKEN"
   local cfg=$(python3 -c "
 import json
@@ -245,9 +289,8 @@ print(json.dumps({'command':'npx','args':['-y','mcp-remote','$url','--allow-http
   register_mcp_code "unisender" npx -y mcp-remote "$url" --allow-http
   green "✓ unisender"
 }
-
 setup_telegram() {
-  ask_secret TELEGRAM_BEARER "Bearer-токен Telegram MCP (из $NOTION_TOKENS_HINT)"
+  ask_secret TELEGRAM_BEARER "Bearer-токен Telegram MCP"
   local url="http://ozma.gogol.school:8001/mcp"
   local cfg=$(python3 -c "
 import json
@@ -257,18 +300,16 @@ print(json.dumps({'command':'npx','args':['-y','mcp-remote','$url','--allow-http
     --header "Authorization: Bearer $TELEGRAM_BEARER"
   green "✓ telegram_ozma_mcp"
 }
-
 GOOGLE_INSTALLED=""
 setup_google() {
   [[ -n "$GOOGLE_INSTALLED" ]] && return 0
   if [[ ! -f "$GOOGLE_TOKEN_PATH" ]]; then
-    yellow "▸ Нужен google_token.json (сервис-аккаунт Google)"
-    echo "  Инструкция: $NOTION_TOKENS_HINT → раздел Google Sheets/Docs"
-    echo "  Положи файл в $GOOGLE_TOKEN_PATH и запусти install.sh снова."
+    yellow "▸ Нужен google_token.json"
+    echo "  Положи в $GOOGLE_TOKEN_PATH и запусти снова."
     yellow "  Пропускаю google_sheets и google_docs."
     return 0
   fi
-  ask_secret GOOGLE_SERVICE_ACCOUNT_EMAIL "Email сервис-аккаунта (xxx@yyy.iam.gserviceaccount.com)" no
+  ask_secret GOOGLE_SERVICE_ACCOUNT_EMAIL "Email сервис-аккаунта" no
   local sheets_cfg=$(python3 -c "
 import json
 print(json.dumps({'command':'npx','args':['-y','mcp-google-sheets'],
@@ -296,8 +337,7 @@ for mcp_name in "${!MCP_NEEDED[@]}"; do
     google-sheets|google-drive|google_sheets|google_docs) setup_google ;;
     notion)
       yellow "▸ notion — встроен в Claude Desktop"
-      echo "  Подключается вручную: Claude Desktop → Settings → Connectors → Notion"
-      ;;
+      echo "  Подключи вручную: Claude Desktop → Settings → Connectors → Notion" ;;
     *) yellow "▸ $mcp_name — неизвестный MCP, пропускаю" ;;
   esac
 done
@@ -305,15 +345,17 @@ done
 echo
 bold "✅ Готово!"
 echo
-echo "Установлены роли: ${ROLES[*]}"
+echo "Рабочая папка: ~/gogol-ai/$FOLDER_NAME/"
+echo "Активные роли: ${ROLES[*]}"
 echo
-echo "Как работать с ролью:"
-for role in "${ROLES[@]}"; do
-  echo "  cd ~/gogol-ai/$role && claude"
-done
+echo "Как работать:"
+echo "  cd ~/gogol-ai/$FOLDER_NAME"
+echo "  claude"
 echo
-echo "В этой папке Claude автоматически подхватит CLAUDE.md роли + общий контекст из ~/.claude/."
-echo "Скилы роли (если есть) → в Claude напиши '/' для списка."
+echo "Claude увидит CLAUDE.md со всеми твоими ролями + общий контекст из ~/.claude/."
+echo "Доступные скилы — '/' в чате."
 echo
-echo "Чтобы добавить ещё роль позже: запусти эту же команду с другим именем."
-echo "Перезапустить Claude Desktop после установки — Cmd+Q, открыть снова."
+echo "Добавить ещё роль: запусти эту же команду со всем списком ролей."
+echo "Пример: bash install.sh doc-fin-ops analyst marketing-assistant"
+echo
+echo "Перезапусти Claude Desktop после установки (Cmd+Q → открыть)."

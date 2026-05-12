@@ -1,16 +1,18 @@
-# Gogol School AI — установщик ролей для Windows (PowerShell, мульти-роль).
+# Gogol School AI — установщик ролей для Windows (PowerShell).
 #
 # Использование:
 #   iwr -useb https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.ps1 -OutFile $env:TEMP\install.ps1
 #   & $env:TEMP\install.ps1 -Roles doc-fin-ops,analyst
+#   & $env:TEMP\install.ps1 -Roles doc-fin-ops,analyst -Folder bella
 #
-# Доступные роли:
-#   doc-fin-ops, client-office-ops, senior-admin, marketing-assistant,
-#   smm, brand-pr, product-manager, student-comms, product-assistant, analyst
+# По умолчанию создаётся одна объединённая рабочая папка ~\gogol-ai\work\
+# с CLAUDE.md и skills всех выбранных ролей.
 
 param(
     [Parameter(Mandatory=$true, Position=0)]
-    [string[]]$Roles
+    [string[]]$Roles,
+
+    [string]$Folder = "work"
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,6 +24,7 @@ $RepoDir           = Join-Path $GogolDir "repo"
 $EnvFile           = Join-Path $GogolDir ".env"
 $GoogleTokenPath   = Join-Path $GogolDir "google_token.json"
 $RolesDir          = Join-Path $env:USERPROFILE "gogol-ai"
+$WorkDir           = Join-Path $RolesDir $Folder
 $ClaudeDir         = Join-Path $env:USERPROFILE ".claude"
 $ClaudeDesktopCfg  = Join-Path $env:APPDATA "Claude\claude_desktop_config.json"
 $NotionTokensHint  = "Notion -> Токены MCP"
@@ -31,7 +34,7 @@ function Write-Fail($msg) { Write-Host "✗ $msg" -ForegroundColor Red }
 function Write-Warn($msg) { Write-Host "▸ $msg" -ForegroundColor Yellow }
 function Write-Step($msg) { Write-Host "`n$msg" -ForegroundColor Cyan }
 
-Write-Host "`n🚀 Установка ролей: $($Roles -join ', ')" -ForegroundColor Magenta
+Write-Host "`n🚀 Установка ролей в ~\gogol-ai\$Folder\: $($Roles -join ', ')" -ForegroundColor Magenta
 
 # ─── Проверка зависимостей ────────────────────────────────────────────────
 function Test-Cmd($cmd, $hint) {
@@ -60,8 +63,9 @@ if (Test-Path (Join-Path $RepoDir ".git")) {
 }
 
 foreach ($role in $Roles) {
-    $rDir = Join-Path $RepoDir "roles\$role"
-    if (-not (Test-Path $rDir)) { Write-Fail "Роль '$role' не найдена."; exit 1 }
+    if (-not (Test-Path (Join-Path $RepoDir "roles\$role"))) {
+        Write-Fail "Роль '$role' не найдена."; exit 1
+    }
 }
 
 # ─── Шаг 1: глобальный shared в ~\.claude\ ────────────────────────────────
@@ -69,7 +73,7 @@ Write-Step "📝 Установка общего контекста (~\.claude\)
 New-Item -ItemType Directory -Path "$ClaudeDir\knowledge" -Force | Out-Null
 
 Copy-Item -Path (Join-Path $RepoDir "shared\CLAUDE.md") -Destination (Join-Path $ClaudeDir "CLAUDE.md") -Force
-Write-Ok "$ClaudeDir\CLAUDE.md"
+Write-Ok "$ClaudeDir\CLAUDE.md (общий контекст)"
 
 Copy-Item -Path (Join-Path $RepoDir "shared\knowledge\*") -Destination "$ClaudeDir\knowledge" -Recurse -Force
 Write-Ok "$ClaudeDir\knowledge\"
@@ -79,35 +83,75 @@ Get-ChildItem -Path (Join-Path $RepoDir "shared") -Filter "*.md" -File | Where-O
     Write-Ok "$ClaudeDir\$($_.Name)"
 }
 
-# ─── Шаг 2: рабочие папки ролей в ~\gogol-ai\<role>\ ──────────────────────
-Write-Step "📁 Установка рабочих папок ролей (~\gogol-ai\<role>\)"
-New-Item -ItemType Directory -Path $RolesDir -Force | Out-Null
+# ─── Шаг 2: объединённая рабочая папка ────────────────────────────────────
+Write-Step "📁 Сборка рабочей папки $WorkDir"
 
+if (Test-Path "$WorkDir\.claude\skills") { Remove-Item -Recurse -Force "$WorkDir\.claude\skills" }
+Remove-Item -Force "$WorkDir\CLAUDE.md","$WorkDir\ozma.md" -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Path "$WorkDir\.claude\skills" -Force | Out-Null
+
+# CLAUDE.md: склейка всех ролей
+$claudeMdParts = @()
+$claudeMdParts += "# Рабочая папка: $Folder"
+$claudeMdParts += ""
+$claudeMdParts += "Активные роли: **$($Roles -join ', ')**"
+$claudeMdParts += ""
+$claudeMdParts += "Общий контекст про Gogol School — в ``~\.claude\CLAUDE.md`` (загружается автоматически). Ниже — специфика выбранных ролей."
+$claudeMdParts += ""
 foreach ($role in $Roles) {
-    $src = Join-Path $RepoDir "roles\$role"
-    $dst = Join-Path $RolesDir $role
-    New-Item -ItemType Directory -Path "$dst\.claude\skills" -Force | Out-Null
-
-    foreach ($f in @("CLAUDE.md","ozma.md","README.md")) {
-        $srcFile = Join-Path $src $f
-        if (Test-Path $srcFile) {
-            Copy-Item -Path $srcFile -Destination (Join-Path $dst $f) -Force
-        }
+    $rMd = Join-Path $RepoDir "roles\$role\CLAUDE.md"
+    if (Test-Path $rMd) {
+        $claudeMdParts += "---"
+        $claudeMdParts += ""
+        $claudeMdParts += "# === Роль: $role ==="
+        $claudeMdParts += ""
+        $claudeMdParts += (Get-Content $rMd -Raw)
+        $claudeMdParts += ""
     }
-    $skillsSrc = Join-Path $src "skills"
-    if (Test-Path $skillsSrc) {
-        Copy-Item -Path "$skillsSrc\*" -Destination "$dst\.claude\skills" -Recurse -Force
-    }
-    Write-Ok "~\gogol-ai\$role\"
 }
+($claudeMdParts -join "`n") | Set-Content -Path (Join-Path $WorkDir "CLAUDE.md") -NoNewline
+Write-Ok "$WorkDir\CLAUDE.md (склейка $($Roles.Count) ролей)"
+
+# ozma.md: склейка
+$ozmaSrcs = @()
+foreach ($role in $Roles) {
+    $o = Join-Path $RepoDir "roles\$role\ozma.md"
+    if (Test-Path $o) { $ozmaSrcs += @{role=$role; path=$o} }
+}
+if ($ozmaSrcs.Count -eq 1) {
+    Copy-Item -Path $ozmaSrcs[0].path -Destination (Join-Path $WorkDir "ozma.md") -Force
+    Write-Ok "$WorkDir\ozma.md"
+} elseif ($ozmaSrcs.Count -gt 1) {
+    $parts = @("# Контекст по OzmaDB (объединённый из ролей)", "")
+    foreach ($s in $ozmaSrcs) {
+        $parts += "---"
+        $parts += "## === Роль: $($s.role) ==="
+        $parts += ""
+        $parts += (Get-Content $s.path -Raw)
+        $parts += ""
+    }
+    ($parts -join "`n") | Set-Content -Path (Join-Path $WorkDir "ozma.md") -NoNewline
+    Write-Ok "$WorkDir\ozma.md (склейка $($ozmaSrcs.Count) ролей)"
+}
+
+# Skills: объединение из всех ролей
+$skillTotal = 0
+foreach ($role in $Roles) {
+    $src = Join-Path $RepoDir "roles\$role\skills"
+    if (-not (Test-Path $src)) { continue }
+    Get-ChildItem -Path $src -Directory | ForEach-Object {
+        $dst = Join-Path "$WorkDir\.claude\skills" $_.Name
+        Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force
+        $skillTotal++
+    }
+}
+Write-Ok "$WorkDir\.claude\skills\ ($skillTotal скилов)"
 
 # ─── Шаг 3: токены и MCP ──────────────────────────────────────────────────
 if (-not (Test-Path $EnvFile)) { New-Item -ItemType File -Path $EnvFile -Force | Out-Null }
 $Secrets = @{}
 Get-Content $EnvFile -ErrorAction SilentlyContinue | ForEach-Object {
-    if ($_ -match '^\s*([A-Z_]+)\s*=\s*"?(.*?)"?\s*$') {
-        $Secrets[$matches[1]] = $matches[2]
-    }
+    if ($_ -match '^\s*([A-Z_]+)\s*=\s*"?(.*?)"?\s*$') { $Secrets[$matches[1]] = $matches[2] }
 }
 
 function Get-Secret([string]$Name, [string]$Hint, [bool]$Hide = $true) {
@@ -118,15 +162,13 @@ function Get-Secret([string]$Name, [string]$Hint, [bool]$Hide = $true) {
         $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
         $value = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
         [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-    } else {
-        $value = Read-Host "  значение"
-    }
+    } else { $value = Read-Host "  значение" }
     $Secrets[$Name] = $value
     "`n$Name=`"$value`"" | Add-Content -Path $EnvFile
     return $value
 }
 
-# Объединяем MCP по всем ролям
+# Объединение MCP по всем ролям
 $mcpNeeded = @{}
 foreach ($role in $Roles) {
     $mcpJson = Join-Path $RepoDir "roles\$role\.mcp.json"
@@ -138,9 +180,9 @@ foreach ($role in $Roles) {
 }
 
 if ($mcpNeeded.Count -eq 0) {
-    Write-Warn "У выбранных ролей нет MCP-серверов — пропускаю настройку."
+    Write-Warn "У выбранных ролей нет MCP-серверов."
 } else {
-    Write-Step "🔌 Настройка MCP-серверов (объединённый список по ролям)"
+    Write-Step "🔌 Настройка MCP-серверов (общий список по выбранным ролям)"
     Write-Host "Токены брать из: $NotionTokensHint" -ForegroundColor Gray
 }
 
@@ -205,8 +247,8 @@ $script:GoogleInstalled = $false
 function Install-Google {
     if ($script:GoogleInstalled) { return }
     if (-not (Test-Path $GoogleTokenPath)) {
-        Write-Warn "Нужен google_token.json (сервис-аккаунт Google)"
-        Write-Host "  Положи в $GoogleTokenPath и запусти install.ps1 снова." -ForegroundColor Gray
+        Write-Warn "Нужен google_token.json"
+        Write-Host "  Положи в $GoogleTokenPath и запусти снова." -ForegroundColor Gray
         Write-Warn "Пропускаю google_sheets и google_docs."
         return
     }
@@ -238,7 +280,7 @@ foreach ($name in $mcpNeeded.Keys) {
         '^(google-sheets|google-drive|google_sheets|google_docs)$' { Install-Google }
         '^notion$' {
             Write-Warn "notion — встроен в Claude Desktop"
-            Write-Host "  Подключается вручную: Settings -> Connectors -> Notion" -ForegroundColor Gray
+            Write-Host "  Подключи вручную: Settings -> Connectors -> Notion" -ForegroundColor Gray
         }
         default { Write-Warn "$name — неизвестный MCP, пропускаю" }
     }
@@ -246,14 +288,12 @@ foreach ($name in $mcpNeeded.Keys) {
 
 Write-Host "`n✅ Готово!" -ForegroundColor Green
 Write-Host ""
-Write-Host "Установлены роли: $($Roles -join ', ')"
+Write-Host "Рабочая папка: $WorkDir"
+Write-Host "Активные роли: $($Roles -join ', ')"
 Write-Host ""
-Write-Host "Как работать с ролью:"
-foreach ($role in $Roles) {
-    Write-Host "  cd $RolesDir\$role && claude"
-}
+Write-Host "Как работать:"
+Write-Host "  cd $WorkDir"
+Write-Host "  claude"
 Write-Host ""
-Write-Host "В этой папке Claude автоматически подхватит CLAUDE.md роли + общий контекст из ~\.claude\"
-Write-Host "Скилы роли — '/' в Claude для списка."
-Write-Host ""
+Write-Host "Добавить ещё роль: запусти эту же команду со всем списком ролей."
 Write-Host "Перезапусти Claude Desktop после установки."
