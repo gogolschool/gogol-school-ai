@@ -6,7 +6,7 @@
 #
 # Доступные роли:
 #   doc-fin-ops, client-office-ops, senior-admin, marketing-assistant,
-#   smm, brand-pr, product-manager, student-comms, product-assistant
+#   smm, brand-pr, product-manager, student-comms, product-assistant, analyst
 
 param(
     [Parameter(Mandatory=$true, Position=0)]
@@ -91,6 +91,12 @@ Write-Ok "$combined обновлён"
 
 Copy-Item -Path (Join-Path $RepoDir "shared\knowledge\*") -Destination "$ClaudeDir\knowledge" -Recurse -Force
 Write-Ok "$ClaudeDir\knowledge\ обновлён"
+
+# Копируем дополнительные shared-файлы (marketing.md и т.п.), кроме CLAUDE.md
+Get-ChildItem -Path (Join-Path $RepoDir "shared") -Filter "*.md" -File | Where-Object { $_.Name -ne "CLAUDE.md" } | ForEach-Object {
+    Copy-Item -Path $_.FullName -Destination (Join-Path $ClaudeDir $_.Name) -Force
+    Write-Ok "$ClaudeDir\$($_.Name) обновлён"
+}
 
 $ozmaMd = Join-Path $RoleDir "ozma.md"
 if (Test-Path $ozmaMd) {

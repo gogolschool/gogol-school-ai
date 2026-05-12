@@ -29,6 +29,7 @@ roles/
   product-manager/        ← Менеджер программ
   student-comms/          ← Менеджер по общению со студентами
   product-assistant/      ← Помощник менеджера продукта
+  analyst/                ← Аналитик
 
 install.sh                ← установщик для macOS / Linux
 install.ps1               ← установщик для Windows

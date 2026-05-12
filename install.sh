@@ -6,7 +6,7 @@
 #
 # Доступные роли:
 #   doc-fin-ops, client-office-ops, senior-admin, marketing-assistant,
-#   smm, brand-pr, product-manager, student-comms, product-assistant
+#   smm, brand-pr, product-manager, student-comms, product-assistant, analyst
 
 set -euo pipefail
 
@@ -31,7 +31,7 @@ if [[ -z "$ROLE" ]]; then
   red "Не указана роль."
   echo "Использование: bash install.sh <role>"
   echo "Доступные: doc-fin-ops, client-office-ops, senior-admin, marketing-assistant,"
-  echo "           smm, brand-pr, product-manager, student-comms, product-assistant"
+  echo "           smm, brand-pr, product-manager, student-comms, product-assistant, analyst"
   exit 1
 fi
 
@@ -98,6 +98,14 @@ green "✓ ~/.claude/CLAUDE.md обновлён"
 mkdir -p "$HOME/.claude/knowledge"
 cp -R "$REPO_DIR/shared/knowledge/." "$HOME/.claude/knowledge/"
 green "✓ ~/.claude/knowledge/ обновлён"
+
+# Копируем дополнительные shared-файлы (marketing.md и т.п.)
+for shared_file in "$REPO_DIR/shared"/*.md; do
+  base=$(basename "$shared_file")
+  [[ "$base" == "CLAUDE.md" ]] && continue  # уже склеен выше
+  cp "$shared_file" "$HOME/.claude/$base"
+  green "✓ ~/.claude/$base обновлён"
+done
 
 # Копируем ozma.md рядом, если есть
 if [[ -f "$ROLE_DIR/ozma.md" ]]; then
