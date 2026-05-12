@@ -7,15 +7,21 @@ AI-ассистенты для сотрудников Gogol School: CLAUDE.md, M
 ## Структура
 
 ```
+shared/
+  CLAUDE.md               ← общий контекст про Gogol School (читают все роли)
+  knowledge/
+    systems.md            ← обзор Ozma/Bitrix/Notion/Telegram/Sheets
+    database.md           ← схема OzmaDB
+
 roles/
-  doc-fin-ops/            ← Менеджер по документообороту
-    CLAUDE.md             ← общая личность ассистента
+  doc-fin-ops/            ← Документооборот + финансы + операции
+    CLAUDE.md             ← только специфика роли (общее — в shared/)
     ozma.md               ← как работать с OzmaDB
     .mcp.json             ← список подключаемых MCP-серверов
     skills/
       bank/SKILL.md       ← /bank — внесение банковской выписки
       newcontract/SKILL.md
-  client-office-ops/     ← Менеджер по операциям
+  client-office-ops/      ← Клиентский офис + операции
   head-admin/             ← Главный администратор
   rop/                    ← РОП
   senior-admin/           ← Старший администратор
