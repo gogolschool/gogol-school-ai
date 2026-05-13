@@ -168,6 +168,69 @@ function Get-Secret([string]$Name, [string]$Hint, [bool]$Hide = $true) {
     return $value
 }
 
+# ─── Опциональный авто-фетч общих токенов из Notion ───────────────────────
+# Использует Claude Code CLI + Notion MCP. Токены НИКОГДА не уходят в git:
+# Notion -> claude CLI -> переменные -> .env (только на этой машине).
+$NotionTokensPageUrl = "https://www.notion.so/35e612c762af8159910dce94293341af"
+
+function Fetch-TokensFromNotion {
+    if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { return $false }
+
+    $prompt = @"
+Сходи в Notion по URL $NotionTokensPageUrl. На этой странице ('Токены MCP') найди значения переменных в кодовых блоках. Выведи строго в формате (одна переменная на строку, без пробелов вокруг =, без кавычек, без markdown, без любого другого текста):
+
+OZMA_BEARER=значение
+OZMA_CLIENT_SECRET=значение
+SITE_BEARER=значение
+UNISENDER_TOKEN=значение
+TELEGRAM_BEARER=значение
+
+Если какого-то значения нет (или это плейсхолдер TODO) — пропусти его строку. Никаких пояснений, только эти строки.
+"@
+
+    Write-Warn "Запрашиваю токены через Claude Code + Notion MCP (~10-30 сек)..."
+    $output = $null
+    try {
+        $output = & claude -p $prompt --output-format text 2>$null
+    } catch { return $false }
+    if (-not $output) { return $false }
+
+    $found = 0
+    $allowedNames = @("OZMA_BEARER","OZMA_CLIENT_SECRET","SITE_BEARER","UNISENDER_TOKEN","TELEGRAM_BEARER")
+    foreach ($line in ($output -split "`n")) {
+        if ($line -match '^([A-Z_]+)=(.+)$') {
+            $n = $matches[1].Trim()
+            $v = $matches[2].Trim()
+            if ($allowedNames -notcontains $n) { continue }
+            if ($v -eq "значение" -or $v -like "*TODO*") { continue }
+            if ($Secrets.ContainsKey($n) -and $Secrets[$n]) { continue }
+            $Secrets[$n] = $v
+            "`n$n=`"$v`"" | Add-Content -Path $EnvFile
+            Write-Ok "$n (из Notion)"
+            $found++
+        }
+    }
+    return ($found -gt 0)
+}
+
+$needGeneral = $false
+foreach ($v in @("OZMA_BEARER","OZMA_CLIENT_SECRET","SITE_BEARER","UNISENDER_TOKEN","TELEGRAM_BEARER")) {
+    if (-not ($Secrets.ContainsKey($v) -and $Secrets[$v])) { $needGeneral = $true; break }
+}
+if ($needGeneral -and (Get-Command claude -ErrorAction SilentlyContinue)) {
+    Write-Host ""
+    Write-Warn "Можно подтянуть общие токены MCP из Notion автоматически."
+    Write-Host "  Нужен Claude Code с подключённым Notion MCP." -ForegroundColor Gray
+    $ans = Read-Host "  Подтянуть из Notion? [Y/n]"
+    if ($ans -notmatch '^[Nn]') {
+        if (Fetch-TokensFromNotion) {
+            Write-Ok "Токены сохранены в $EnvFile."
+        } else {
+            Write-Warn "Не получилось (нет доступа к Notion или Notion MCP не подключён). Спрошу вручную."
+        }
+    }
+}
+
 # Объединение MCP по всем ролям
 $mcpNeeded = @{}
 foreach ($role in $Roles) {

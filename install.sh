@@ -228,6 +228,81 @@ ask_secret() {
   export "$var_name=$value"
 }
 
+# ─── Опциональный авто-фетч общих токенов из Notion ────────────────────────
+# Использует Claude Code CLI + подключённый Notion MCP. Если у пользователя
+# нет доступа к Notion-странице 🔐 Токены MCP — fetch провалится и мы
+# тихо упадём в ручной ввод. Токены НИКОГДА не уходят в git: они идут
+# Notion → claude CLI → переменные bash → ~/.gogol-ai/.env (chmod 600).
+NOTION_TOKENS_PAGE_URL="https://www.notion.so/35e612c762af8159910dce94293341af"
+
+fetch_tokens_from_notion() {
+  command -v claude >/dev/null 2>&1 || return 1
+
+  local prompt="Сходи в Notion по URL ${NOTION_TOKENS_PAGE_URL}. На этой странице ('🔐 Токены MCP') найди значения переменных в кодовых блоках. Выведи строго в формате (одна переменная на строку, без пробелов вокруг =, без кавычек, без markdown, без любого другого текста):
+
+OZMA_BEARER=значение
+OZMA_CLIENT_SECRET=значение
+SITE_BEARER=значение
+UNISENDER_TOKEN=значение
+TELEGRAM_BEARER=значение
+
+Если какого-то значения нет (или это плейсхолдер TODO) — пропусти его строку. Никаких пояснений, только эти строки."
+
+  yellow "  Запрашиваю токены через Claude Code + Notion MCP (это займёт ~10-30 сек)..."
+  local output
+  if ! output=$(claude -p "$prompt" --output-format text 2>/dev/null); then
+    return 1
+  fi
+
+  local found=0 n v
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "$line" =~ ^([A-Z_]+)=(.+)$ ]]; then
+      n="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
+      # Игнорируем чужие/мусорные переменные
+      case "$n" in
+        OZMA_BEARER|OZMA_CLIENT_SECRET|SITE_BEARER|UNISENDER_TOKEN|TELEGRAM_BEARER) ;;
+        *) continue ;;
+      esac
+      # Trim whitespace
+      v="${v#"${v%%[![:space:]]*}"}"
+      v="${v%"${v##*[![:space:]]}"}"
+      # Skip placeholders
+      [[ "$v" == "значение" || "$v" == *"TODO"* ]] && continue
+      # Skip if уже в кэше
+      [[ -n "${!n:-}" ]] && continue
+      printf "%s=%q\n" "$n" "$v" >> "$ENV_FILE"
+      export "$n=$v"
+      green "  ✓ $n (из Notion)"
+      ((found++))
+    fi
+  done <<< "$output"
+
+  (( found > 0 ))
+}
+
+# Спрашиваем: подтянуть автоматически или нет.
+# Только если каких-то общих токенов ещё нет в кэше.
+need_general=0
+for v in OZMA_BEARER OZMA_CLIENT_SECRET SITE_BEARER UNISENDER_TOKEN TELEGRAM_BEARER; do
+  [[ -z "${!v:-}" ]] && need_general=1
+done
+
+if (( need_general )) && command -v claude >/dev/null 2>&1; then
+  echo
+  yellow "▸ Можно подтянуть общие токены MCP из Notion автоматически."
+  echo "  Нужен Claude Code с подключённым Notion MCP (Settings → Connectors → Notion)."
+  echo "  Если откажешься — спрошу токены вручную."
+  read -r -p "  Подтянуть из Notion? [Y/n]: " ans
+  if [[ ! "$ans" =~ ^[Nn] ]]; then
+    if fetch_tokens_from_notion; then
+      green "  Токены сохранены в $ENV_FILE."
+    else
+      yellow "  Не получилось (нет доступа к Notion или Notion MCP не подключён). Спрошу вручную."
+    fi
+  fi
+fi
+
 declare -A MCP_NEEDED
 for role in "${ROLES[@]}"; do
   mcp_json="$REPO_DIR/roles/$role/.mcp.json"
