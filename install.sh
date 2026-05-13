@@ -14,6 +14,27 @@
 
 set -euo pipefail
 
+# ─── Проверка версии bash ───────────────────────────────────────────────────
+# Скрипт использует ассоциативные массивы (declare -A) — нужен bash 4+.
+# На macOS системный /bin/bash — 3.2, поэтому проверяем и подсказываем фикс.
+if (( BASH_VERSINFO[0] < 4 )); then
+  printf "\033[31m✗ Нужен bash 4 или новее (у тебя %s).\033[0m\n" "$BASH_VERSION" >&2
+  if [[ "$(uname)" == "Darwin" ]]; then
+    cat >&2 <<'EOF'
+
+На macOS системный bash — 3.2. Поставь новый через Homebrew и перезапусти:
+
+  brew install bash
+
+  curl -fsSL https://raw.githubusercontent.com/gogolschool/gogol-school-ai/main/install.sh -o /tmp/install.sh
+  /opt/homebrew/bin/bash /tmp/install.sh <role>     # Apple Silicon
+  /usr/local/bin/bash    /tmp/install.sh <role>     # Intel Mac
+
+EOF
+  fi
+  exit 1
+fi
+
 # ─── Константы ──────────────────────────────────────────────────────────────
 REPO_URL="https://github.com/gogolschool/gogol-school-ai.git"
 GOGOL_DIR="$HOME/.gogol-ai"
