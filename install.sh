@@ -91,10 +91,11 @@ check_dep() {
 
 bold "📋 Проверка зависимостей"
 MISSING=0
-check_dep node "brew install node" || MISSING=1
+check_dep node "brew install node  (или скачай .pkg с https://nodejs.org)" || MISSING=1
 check_dep npm "идёт с node" || MISSING=1
 check_dep git "brew install git" || MISSING=1
-check_dep claude "https://claude.com/download" || MISSING=1
+check_dep python3 "brew install python  (или скачай .pkg с https://python.org)" || MISSING=1
+check_dep claude "npm install -g @anthropic-ai/claude-code  (нужны права sudo, если node из .pkg)" || MISSING=1
 (( MISSING )) && { red "Установи отсутствующие компоненты."; exit 1; }
 echo
 
@@ -167,9 +168,13 @@ mkdir -p "$WORK_DIR/.claude/skills"
 green "✓ $WORK_DIR/CLAUDE.md (склейка ${#ROLES[@]} ролей)"
 
 # ── ozma.md: склейка, если несколько; иначе копия ──
+# Используем x=$((x+1)) вместо ((x++)) — последний при x=0 возвращает exit 1
+# и под set -e тихо убивает скрипт.
 ozma_count=0
 for role in "${ROLES[@]}"; do
-  [[ -f "$REPO_DIR/roles/$role/ozma.md" ]] && ((ozma_count++)) || true
+  if [[ -f "$REPO_DIR/roles/$role/ozma.md" ]]; then
+    ozma_count=$((ozma_count + 1))
+  fi
 done
 if (( ozma_count == 1 )); then
   for role in "${ROLES[@]}"; do
@@ -195,6 +200,7 @@ elif (( ozma_count > 1 )); then
 fi
 
 # ── skills: копируем все из всех ролей в .claude/skills/ ──
+# x=$((x+1)) вместо ((x++)) — см. комментарий выше.
 skill_total=0
 for role in "${ROLES[@]}"; do
   src="$REPO_DIR/roles/$role/skills"
@@ -203,7 +209,7 @@ for role in "${ROLES[@]}"; do
     [[ ! -d "$skill_dir" ]] && continue
     skill_name=$(basename "$skill_dir")
     cp -R "$skill_dir" "$WORK_DIR/.claude/skills/$skill_name"
-    ((skill_total++))
+    skill_total=$((skill_total + 1))
   done
 done
 green "✓ $WORK_DIR/.claude/skills/ ($skill_total скилов)"
@@ -274,7 +280,7 @@ TELEGRAM_BEARER=значение
       printf "%s=%q\n" "$n" "$v" >> "$ENV_FILE"
       export "$n=$v"
       green "  ✓ $n (из Notion)"
-      ((found++))
+      found=$((found + 1))
     fi
   done <<< "$output"
 
@@ -306,16 +312,34 @@ fi
 declare -A MCP_NEEDED
 for role in "${ROLES[@]}"; do
   mcp_json="$REPO_DIR/roles/$role/.mcp.json"
-  [[ ! -f "$mcp_json" ]] && continue
+  if [[ ! -f "$mcp_json" ]]; then
+    yellow "  ⚠ нет $mcp_json — пропускаю роль $role в MCP-фазе"
+    continue
+  fi
+  # Парсим список MCP-серверов из роли. Если python падает — показываем ошибку.
+  parsed_output=""
+  if ! parsed_output=$(python3 -c "
+import json, sys
+try:
+    d = json.load(open('$mcp_json'))
+    print('\n'.join((d.get('mcpServers') or {}).keys()))
+except Exception as e:
+    print(f'PARSE_ERROR: {e}', file=sys.stderr)
+    sys.exit(1)
+" 2>&1); then
+    red "  ✗ Не смог разобрать $mcp_json:"
+    echo "    $parsed_output"
+    continue
+  fi
   while IFS= read -r name; do
     [[ -n "$name" ]] && MCP_NEEDED["$name"]=1
-  done < <(python3 -c "import json; d=json.load(open('$mcp_json')); print('\n'.join((d.get('mcpServers') or {}).keys()))")
+  done <<< "$parsed_output"
 done
 
 if [[ ${#MCP_NEEDED[@]} -eq 0 ]]; then
   yellow "У выбранных ролей нет MCP-серверов."
 else
-  bold "🔌 Настройка MCP-серверов (общий список по выбранным ролям)"
+  bold "🔌 Настройка MCP-серверов (${#MCP_NEEDED[@]} шт.): ${!MCP_NEEDED[*]}"
   echo "Токены брать из: $NOTION_TOKENS_HINT"
 fi
 
