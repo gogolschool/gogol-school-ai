@@ -47,8 +47,8 @@ $missing = $false
 if (-not (Test-Cmd "node"   "winget install OpenJS.NodeJS")) { $missing = $true }
 if (-not (Test-Cmd "npm"    "идёт с node"))                    { $missing = $true }
 if (-not (Test-Cmd "git"    "winget install Git.Git"))         { $missing = $true }
-if (-not (Test-Cmd "claude" "https://claude.com/download"))    { $missing = $true }
-if (-not (Test-Cmd "python" "winget install Python.Python.3.12")) { $missing = $true }
+if (-not (Test-Cmd "claude" "npm install -g @anthropic-ai/claude-code")) { $missing = $true }
+# python в Windows-версии не нужен — JSON парсится нативным ConvertFrom-Json.
 if ($missing) { Write-Fail "Установи отсутствующие компоненты."; exit 1 }
 
 # ─── Клонирование/обновление репо ─────────────────────────────────────────
@@ -235,8 +235,16 @@ if ($needGeneral -and (Get-Command claude -ErrorAction SilentlyContinue)) {
 $mcpNeeded = @{}
 foreach ($role in $Roles) {
     $mcpJson = Join-Path $RepoDir "roles\$role\.mcp.json"
-    if (-not (Test-Path $mcpJson)) { continue }
-    $d = Get-Content $mcpJson -Raw | ConvertFrom-Json
+    if (-not (Test-Path $mcpJson)) {
+        Write-Warn "  нет $mcpJson — пропускаю роль $role в MCP-фазе"
+        continue
+    }
+    try {
+        $d = Get-Content $mcpJson -Raw | ConvertFrom-Json
+    } catch {
+        Write-Fail "  Не смог разобрать $mcpJson — $($_.Exception.Message)"
+        continue
+    }
     if ($d.mcpServers) {
         foreach ($p in $d.mcpServers.PSObject.Properties.Name) { $mcpNeeded[$p] = $true }
     }
@@ -245,7 +253,8 @@ foreach ($role in $Roles) {
 if ($mcpNeeded.Count -eq 0) {
     Write-Warn "У выбранных ролей нет MCP-серверов."
 } else {
-    Write-Step "🔌 Настройка MCP-серверов (общий список по выбранным ролям)"
+    $names = ($mcpNeeded.Keys -join ' ')
+    Write-Step "🔌 Настройка MCP-серверов ($($mcpNeeded.Count) шт.): $names"
     Write-Host "Токены брать из: $NotionTokensHint" -ForegroundColor Gray
 }
 
