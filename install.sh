@@ -139,11 +139,12 @@ echo
 # ─── Шаг 2: объединённая рабочая папка ─────────────────────────────────────
 bold "📁 Сборка рабочей папки ~/gogol-ai/$FOLDER_NAME/"
 
-# Чистим только то, что генерируется (CLAUDE.md, ozma.md, skills/) —
+# Чистим только то, что генерируется (CLAUDE.md, ozma.md) —
 # не трогаем личные файлы пользователя, если он что-то туда положил.
+# Скилы раскатываются глобально (~/.claude/skills/), а не в WORK_DIR,
+# чтобы /<команда> подхватывалась из любой папки.
 rm -f "$WORK_DIR/CLAUDE.md" "$WORK_DIR/ozma.md"
-rm -rf "$WORK_DIR/.claude/skills"
-mkdir -p "$WORK_DIR/.claude/skills"
+mkdir -p "$WORK_DIR"
 
 # ── CLAUDE.md: склейка всех CLAUDE.md выбранных ролей ──
 {
@@ -199,8 +200,10 @@ elif (( ozma_count > 1 )); then
   green "✓ $WORK_DIR/ozma.md (склейка из $ozma_count ролей)"
 fi
 
-# ── skills: копируем все из всех ролей в .claude/skills/ ──
+# ── skills: копируем все из всех ролей в ~/.claude/skills/ ──
+# Глобальная установка — /<команда> работает из любой папки.
 # x=$((x+1)) вместо ((x++)) — см. комментарий выше.
+mkdir -p "$CLAUDE_DIR/skills"
 skill_total=0
 for role in "${ROLES[@]}"; do
   src="$REPO_DIR/roles/$role/skills"
@@ -208,11 +211,12 @@ for role in "${ROLES[@]}"; do
   for skill_dir in "$src"/*/; do
     [[ ! -d "$skill_dir" ]] && continue
     skill_name=$(basename "$skill_dir")
-    cp -R "$skill_dir" "$WORK_DIR/.claude/skills/$skill_name"
+    rm -rf "$CLAUDE_DIR/skills/$skill_name"
+    cp -R "$skill_dir" "$CLAUDE_DIR/skills/$skill_name"
     skill_total=$((skill_total + 1))
   done
 done
-green "✓ $WORK_DIR/.claude/skills/ ($skill_total скилов)"
+green "✓ ~/.claude/skills/ ($skill_total скилов, доступны из любой папки)"
 echo
 
 # ─── Шаг 3: токены и MCP ───────────────────────────────────────────────────
@@ -473,6 +477,7 @@ echo "  cd ~/gogol-ai/$FOLDER_NAME"
 echo "  claude"
 echo
 echo "Claude увидит CLAUDE.md со всеми твоими ролями + общий контекст из ~/.claude/."
+echo "Скилы установлены глобально в ~/.claude/skills/ и работают из любой папки."
 echo "Доступные скилы — '/' в чате."
 echo
 echo "Добавить ещё роль: запусти эту же команду со всем списком ролей."
