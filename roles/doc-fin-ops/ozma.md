@@ -21,6 +21,7 @@
 - **Action `generate_and_export_contract_document`** — договор оказания услуг по заявке (`id` — ID заявки, `ext` — `.pdf` по умолчанию). Формирует расписание по модулям и долевое распределение оплаты.
 - **Action `generate_and_export_contract_document2` / `_for_agreement` / `_from_subscription`** — варианты под разные типы продуктов.
 - **Action `create_offer_invoice`** — счёт-оферта. Создаёт запись в `reports.offer_invoices` и открывает форму.
+- **Шаблоны `.odt`** (на которые ссылаются actions через `document_template: { schema, name }`) хранятся в отдельном сервисе. Заливать/обновлять — через админку: https://ozma.gogol.school/report-generator/admin/ozma/. Правка локального файла (например, в `~/Documents/odt_templates/`) до Озмы не доезжает, шаблон нужно перезалить.
 
 ### `base` — люди
 
