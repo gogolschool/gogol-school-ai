@@ -566,6 +566,36 @@ WhatsApp рассылка о баллах лояльности из списка
 | `referral_bonus_notifications_table` | Уведомления о реферальных бонусах |
 | `email_campigns_view` | Email-кампании (Unisender) |
 
+### Статусы email-рассылок (open/click/payment)
+
+Статистика по письмам приходит в Ozma (Unisender API дёргать не нужно):
+
+- **`marketing.email_statuses_for_actions`** — события по рассылкам:
+  - `action` → `pm.actions` (у action есть `sys_related_contact` → `base.people` — это получатель).
+  - `campaign_id` (string) — id кампании в Unisender (искать в `marketing.email_campigns_view`).
+  - `event_time` (datetime).
+  - `event_type` → `marketing.email_event_types`.
+- **`marketing.email_event_types`** — словарь событий:
+  - `ok_sent` — отправлено
+  - `ok_delivered` — доставлено
+  - `ok_read` — прочитано (open)
+  - `ok_link_visited` — клик по ссылке
+  - `payment_completed` — оплата после письма
+  - `payment_completed_72` — оплата в течение 72 часов после рассылки
+
+Шаблон выборки получателей по событию:
+
+```funql
+SELECT DISTINCT a=>sys_related_contact AS contact
+FROM marketing.email_statuses_for_actions AS es
+LEFT JOIN pm.actions AS a ON a.id = es.action
+WHERE es.campaign_id IN (<...>)
+  AND es.event_type = (SELECT id FROM marketing.email_event_types WHERE name = 'ok_read')
+  AND es.event_time BETWEEN <от> AND <до>
+```
+
+Для «не открывали»: брать базовое множество с `ok_sent`, вычитать `ok_read` через NOT EXISTS.
+
 ---
 
 ## Схема `pm`
