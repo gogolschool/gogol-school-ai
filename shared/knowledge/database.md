@@ -917,4 +917,48 @@ LIMIT 1
 
 ---
 
+## FunQL — типовые подводные камни
+
+Проверено эмпирически на текущей версии OzmaDB + MCP (на 2026-05-25).
+
+### 1. Нет `HAVING`
+
+FunQL не поддерживает `HAVING`. Попытка → `Parse error: token HAVING: parse error`.
+
+**Обход** — оборачивать `GROUP BY` в подзапрос с алиасом и фильтровать через `WHERE`:
+
+```funql
+SELECT contact_id
+FROM (
+    SELECT customer AS contact_id, SUM(amount) AS total
+    FROM fin.transactions
+    GROUP BY customer
+) AS sub
+WHERE total >= 50000 AND total < 100000
+```
+
+Алиас подзапроса — через `AS sub` (или другой), без алиаса parse error.
+
+### 2. Все агрегаты в SELECT обязательно с `AS`
+
+`SELECT COUNT(id) FROM ...` → `Unnamed results are allowed only inside expression queries`.
+
+Каждое выражение в SELECT должно иметь имя: `COUNT(id) AS cnt`, `SUM(amount) AS s`. Это касается не только агрегатов — любое вычисление в SELECT нужно именовать.
+
+### 3. Ответ MCP-обёртки обрезается до 50 строк
+
+`funql_query` через MCP отдаёт максимум **50 записей за запрос**, даже если в самом FunQL стоит `LIMIT 200`. В ответе будет `_returned: 50`, реальный размер выборки — в `_total`. Для дочитывания — пагинировать через `offset`.
+
+```funql
+SELECT id FROM ... ORDER BY id LIMIT 50 OFFSET 0
+SELECT id FROM ... ORDER BY id LIMIT 50 OFFSET 50
+...
+```
+
+Без `ORDER BY` пагинация даст нестабильный порядок — добавлять обязательно.
+
+Для именованных view (`named_view_query`) лимит тот же, пагинация через параметр `offset`.
+
+---
+
 *Конец документации*
