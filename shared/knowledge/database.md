@@ -642,7 +642,45 @@ Project Management — задачи менеджеров по работе с к
 - **`messages_for_send`** — очередь исходящих сообщений
 - **`templates`** / **`templates_for_messengers`** — шаблоны сообщений
 - **`requests_for_sending`** — запросы на Telegram-рассылку
+- **`telegram_bot_users`** — подписчики Telegram-бота напоминаний (см. ниже)
 - **`whatsapp_notification_for_ol_requests`** — отправленные уведомления об оплате
+
+### Подключён ли студент к боту напоминаний (критично)
+
+Признак «Подключён к боту напоминаний» (поле в карточке студента / фильтр **«Зарегистрирован в боте»** = аргумент `bot_connected` во view `crm.students_table_all`) означает: **контакт есть в таблице `integration.telegram_bot_users`**. Это единственный источник правды.
+
+Связь: `integration.telegram_bot_users.contact` → `base.people` (= `base.contacts`, одна сущность).
+
+**Подключённые к боту** — уникальные непустые `contact`:
+
+```sql
+SELECT DISTINCT contact
+FROM integration.telegram_bot_users
+WHERE contact IS NOT NULL
+```
+
+**Не подключённые** — контакты, которых нет в этом списке (`NOT IN`).
+
+**Ложные признаки — НЕ использовать:**
+- ❌ **`base.people.bot_connected`** — колонка есть, но пустая у всех (0 записей `true`). Не фильтровать по ней.
+- ❌ **`base.people.telegram_id IS NOT NULL`** — заполнено у ~3500 человек из-за импортов/привязок, это НЕ значит «нажал старт в боте». Часть реально подключённых имеют `telegram_id = null`, но запись в `telegram_bot_users` есть.
+
+Пример — покупатели 2026, не подключённые к боту:
+
+```sql
+SELECT COUNT(DISTINCT customer)
+FROM fin.transactions
+WHERE tks_state IN ('CONFIRMED','AUTHORIZED')
+  AND from_our_organization = false
+  AND customer IS NOT NULL
+  AND transaction_date >= ('2026-01-01'::date)
+  AND transaction_date <  ('2027-01-01'::date)
+  AND customer NOT IN (
+    SELECT contact FROM integration.telegram_bot_users WHERE contact IS NOT NULL
+  )
+```
+
+**Проверка корректности:** число `DISTINCT contact` в `telegram_bot_users` должно совпадать со строками во view `crm/students_table_all?bot_connected=true` (на 2026-05-29 — 306). Если расходится — критерий изменился, перепроверить.
 
 ### Actions
 
