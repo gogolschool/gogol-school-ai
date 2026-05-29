@@ -10,6 +10,7 @@
 - **`skills/`** — slash-команды:
   - **[`/bank`](skills/bank/SKILL.md)** — внесение банковской выписки в `fin.economics`
   - **[`/newcontract`](skills/newcontract/SKILL.md)** — генерация договора оказания услуг
+  - **[`payments-reconcile`](skills/payments-reconcile/SKILL.md)** — ежедневная сверка платежей (CloudPayments / Tinkoff / Mixplat / Yandex Split) с `fin.transactions` в Ozma
 
 ## Установка (для сотрудника)
 
