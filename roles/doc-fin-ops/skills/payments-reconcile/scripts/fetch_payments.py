@@ -16,6 +16,7 @@ Stdout: ~15-line summary.
 import asyncio
 import json
 import os
+import ssl
 import sys
 import time
 from datetime import datetime, timezone
@@ -26,6 +27,37 @@ from urllib.request import Request, urlopen
 
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
+
+# Common system CA bundle locations, tried when the interpreter ships without one
+# (e.g. python.org Python 3.14 on macOS has no bundled certs and an empty default store).
+_CA_BUNDLE_CANDIDATES = (
+    "/etc/ssl/cert.pem",                      # macOS / BSD
+    "/etc/ssl/certs/ca-certificates.crt",     # Debian/Ubuntu
+    "/etc/pki/tls/certs/ca-bundle.crt",       # RHEL/Fedora
+)
+
+
+def make_ssl_context() -> ssl.SSLContext:
+    """Build a verifying SSL context that works even when the interpreter has no
+    bundled CA store. Honours an explicit SSL_CERT_FILE, then falls back to
+    certifi, then to a known system bundle."""
+    ctx = ssl.create_default_context()
+    if os.environ.get("SSL_CERT_FILE") or ctx.get_ca_certs():
+        return ctx  # default store already has certs (or user pinned one)
+    try:
+        import certifi
+        ctx.load_verify_locations(certifi.where())
+        return ctx
+    except ImportError:
+        pass
+    for path in _CA_BUNDLE_CANDIDATES:
+        if os.path.exists(path):
+            ctx.load_verify_locations(path)
+            break
+    return ctx
+
+
+_SSL_CONTEXT = make_ssl_context()
 
 
 def load_env() -> Dict[str, str]:
@@ -47,7 +79,7 @@ def fetch_one(url: str, headers: Dict[str, str], timeout: int = 90) -> Tuple[int
     req = Request(url, headers=headers)
     start = time.time()
     try:
-        with urlopen(req, timeout=timeout) as r:
+        with urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as r:
             data = json.load(r)
         return r.status, data
     except Exception as e:
