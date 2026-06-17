@@ -275,6 +275,50 @@ def build_comment_actions(ozma_txs) -> list:
     return out
 
 
+def provider_name_parts(tx):
+    """(first_name, last_name) from provider JsonData; (None, None) if not cleanly split."""
+    jd = _parse_jsondata(tx.get("raw") or {})
+    first = _ci_get(jd, "firstName")
+    last = _ci_get(jd, "lastName")
+    if first and last:
+        return str(first).strip(), str(last).strip()
+    return None, None
+
+
+def build_fio_fixes(ozma_txs, provider_txs) -> list:
+    """«Кэррот Пользователь» rows → proposed first/last-name fixes from provider data."""
+    prov_by = {}
+    for tx in provider_txs:
+        mp = str(tx.get("merchant_payment_id") or "")
+        if mp:
+            prov_by[(tx.get("expected_ozma_account_id"), mp)] = tx
+    out = []
+    for row in ozma_txs:
+        name = row.get("tks_customer_name") or row.get("account_from_name")
+        if not name or not _KARROT_RE.search(name):
+            continue
+        role_info = _ozma_row_role(row)
+        acc = role_info[0] if role_info else None
+        tx = prov_by.get((acc, str(row.get("tks_order_id") or "")))
+        if not tx:
+            continue
+        first, last = provider_name_parts(tx)
+        if not (first and last):
+            continue
+        pid = _ref_id(row.get("customer"))
+        if pid is None:
+            continue
+        out.append({
+            "person_id": pid,
+            "tx_id": _ref_id(row.get("id")),
+            "old_name": row.get("tks_customer_name") or name,
+            "new_first_name": first,
+            "new_last_name": last,
+            "source": "provider",
+        })
+    return out
+
+
 def normalize_ozma_state(s):
     if not s:
         return "unknown"
