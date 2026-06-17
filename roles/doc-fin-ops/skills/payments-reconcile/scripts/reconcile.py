@@ -257,6 +257,24 @@ def _comment_has_tag(comment, tag) -> bool:
     return tag.lower() in (comment or "").lower()
 
 
+def build_comment_actions(ozma_txs) -> list:
+    """Cert-usage rows whose comment lacks the tag → proposed comment writes."""
+    out = []
+    for row in ozma_txs:
+        if not is_cert_usage(row):
+            continue
+        cur = row.get("comment")
+        if _comment_has_tag(cur, CERT_USAGE_TAG):
+            continue
+        out.append({
+            "tx_id": _ref_id(row.get("id")),
+            "account_from_name": row.get("account_from_name"),
+            "current_comment": cur,
+            "proposed_tag": CERT_USAGE_TAG,
+        })
+    return out
+
+
 def normalize_ozma_state(s):
     if not s:
         return "unknown"
