@@ -285,17 +285,27 @@ def provider_name_parts(tx):
     return None, None
 
 
-def build_fio_fixes(ozma_txs, provider_txs) -> list:
-    """«Кэррот Пользователь» rows → proposed first/last-name fixes from provider data."""
+def build_fio_fixes(ozma_txs, provider_txs, people_by_id) -> list:
+    """«Кэррот Пользователь» masked contacts → proposed first/last-name fixes.
+
+    The masked name lives on the linked contact card (base.people), surfaced here
+    via people_by_id; the real name comes from the matching provider transaction.
+    """
     prov_by = {}
     for tx in provider_txs:
         mp = str(tx.get("merchant_payment_id") or "")
         if mp:
             prov_by[(tx.get("expected_ozma_account_id"), mp)] = tx
     out = []
+    seen_pids = set()
     for row in ozma_txs:
-        name = row.get("tks_customer_name") or row.get("account_from_name")
-        if not name or not _KARROT_RE.search(name):
+        pid = _ref_id(row.get("customer"))
+        if pid is None or pid in seen_pids:
+            continue
+        per = people_by_id.get(pid) or {}
+        cur_name = " ".join(p for p in (per.get("last_name"), per.get("first_name"),
+                                        per.get("patronymic")) if p)
+        if not _KARROT_RE.search(cur_name):
             continue
         role_info = _ozma_row_role(row)
         acc = role_info[0] if role_info else None
@@ -305,13 +315,11 @@ def build_fio_fixes(ozma_txs, provider_txs) -> list:
         first, last = provider_name_parts(tx)
         if not (first and last):
             continue
-        pid = _ref_id(row.get("customer"))
-        if pid is None:
-            continue
+        seen_pids.add(pid)
         out.append({
             "person_id": pid,
             "tx_id": _ref_id(row.get("id")),
-            "old_name": row.get("tks_customer_name") or name,
+            "old_name": cur_name,
             "new_first_name": first,
             "new_last_name": last,
             "source": "provider",
@@ -388,7 +396,7 @@ def build_cert_actions(ozma_txs, provider_txs, people_by_id, comm_by_contact) ->
         ozma_txs, people_by_id, comm_by_contact)
     return {
         "comments": build_comment_actions(ozma_txs),
-        "fio_fixes": build_fio_fixes(ozma_txs, provider_txs),
+        "fio_fixes": build_fio_fixes(ozma_txs, provider_txs, people_by_id),
         "merges": merges,
         "possible_duplicates": possible_dups,
         "fraud_flags": fraud,
