@@ -156,6 +156,33 @@ class TestDedupAndFraud(unittest.TestCase):
         self.assertEqual(fr[0]["payer_id"], 10)
         self.assertEqual(fr[0]["buyer_id"], 26)
 
+    def test_high_confidence_merge_on_phone(self):
+        from reconcile import build_dedup_and_fraud
+        people = {10: {"first_name": "Олег"}, 26: {"first_name": "Олег"}}
+        comm = {10: [{"type": "Телефон", "data": "+7 926 247-41-66"}],
+                26: [{"type": "Телефон", "data": "89262474166"}]}
+        m, pd, fr = build_dedup_and_fraud([self._usage(10, 26)], people, comm)
+        self.assertEqual(len(m), 1)
+        self.assertIn("phone", m[0]["match_signals"])
+        self.assertEqual(m[0]["confidence"], "high")
+        self.assertEqual((pd, fr), ([], []))
+
+    def test_ref_id_dict_shape_handled(self):
+        from reconcile import build_dedup_and_fraud
+        people = {10: {"first_name": "Олег", "last_name": "Новокрещенов"},
+                  26: {"first_name": "Евгения", "last_name": "Линкова"}}
+        row = {"id": {"id": 700, "pun": "x"}, "is_certificate_payment": True,
+               "account_from_type": "Сертификат", "account_from": {"id": 27246},
+               "customer": {"id": 10, "pun": "Олег"},
+               "cert_buyer_id": {"id": 26, "pun": "Евгения"}}
+        m, pd, fr = build_dedup_and_fraud([row], people, {})
+        self.assertEqual((m, pd), ([], []))
+        self.assertEqual(len(fr), 1)
+        self.assertEqual(fr[0]["payer_id"], 10)
+        self.assertEqual(fr[0]["buyer_id"], 26)
+        self.assertEqual(fr[0]["tx_id"], 700)
+        self.assertEqual(fr[0]["cert_account"], 27246)
+
     def test_pair_deduplicated_across_rows(self):
         from reconcile import build_dedup_and_fraud
         people = {10: {"first_name": "Олег"}, 26: {"first_name": "Евгения"}}
