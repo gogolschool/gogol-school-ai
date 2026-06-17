@@ -112,15 +112,3 @@
 - 2 транзакции в CP-холде (status=pending) — не пойдут в выплату, пока не confirmed/cancelled.
 - Yandex Split за день: 84 000 ₽ — найти в Tinkoff-выписке зачисление от «Яндекс» руками.
 ```
-
-### Сертификаты (авто-действия)
-
-cert-usage строка = `is_certificate_payment = true AND account_from=>type = 'Сертификат'`.
-Такие строки имеют `account_to = 7169` («сертификаты - Гоголь Школа»), `tks_order_id = NULL`
-и `tks_date_time = NULL`, поэтому в L1 не участвуют (их account не в ACCOUNT_IDS) и в
-запросе фильтруются по `transaction_date::datetime` (а не `tks_date_time`).
-
-Действия строит `reconcile.py` в `cert_actions.json`; применяются по подтверждению (шаг 7 SKILL.md):
-- **Комментарий** `автоматическое использование сертификата` на cert-usage строки без него (идемпотентно, append через `, `).
-- **ФИО** «Кэррот Пользователь» — маска лежит на карточке контакта (`base.people`, surfaced через `customer=>__main`), НЕ в `tks_customer_name`. Детект по имени связанного контакта; настоящее имя — `firstName`/`lastName` провайдера; апдейт `base.people`.
-- **Дедуп**: payer (`customer`) vs покупатель сертификата (`account_from=>contractor`, поле `cert_buyer_id`). Совпал телефон/email → слияние через `base/merge_two_contacts` (keep = меньший id); совпало только имя → «возможный дубликат»; иначе → анти-фрод-флаг. Сравнивать с держателем (`contact`) бесполезно — подарочный сертификат почти всегда гасит покупатель.
