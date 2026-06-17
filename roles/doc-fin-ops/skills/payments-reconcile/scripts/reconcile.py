@@ -382,6 +382,57 @@ def build_dedup_and_fraud(ozma_txs, people_by_id, comm_by_contact):
     return merges, possible_dups, fraud
 
 
+def build_cert_actions(ozma_txs, provider_txs, people_by_id, comm_by_contact) -> dict:
+    """Assemble the full certificate-actions plan."""
+    merges, possible_dups, fraud = build_dedup_and_fraud(
+        ozma_txs, people_by_id, comm_by_contact)
+    return {
+        "comments": build_comment_actions(ozma_txs),
+        "fio_fixes": build_fio_fixes(ozma_txs, provider_txs),
+        "merges": merges,
+        "possible_duplicates": possible_dups,
+        "fraud_flags": fraud,
+    }
+
+
+def render_cert_section(plan: dict) -> list:
+    """Markdown lines for the 🎁 Сертификаты section."""
+    c = plan["comments"]
+    f = plan["fio_fixes"]
+    m = plan["merges"]
+    pd = plan["possible_duplicates"]
+    fr = plan["fraud_flags"]
+    lines = ["", "## 🎁 Сертификаты", ""]
+    if not any((c, f, m, pd, fr)):
+        lines.append("_Сертификатных действий нет._")
+        return lines
+    if c:
+        lines.append(f"### Комментарии к авто-использованию ({len(c)})")
+        for a in c:
+            lines.append(f"- tx {a['tx_id']} ({a['account_from_name']}): + «{a['proposed_tag']}»")
+    if f:
+        lines.append(f"### Правка ФИО «Кэррот» ({len(f)})")
+        for a in f:
+            lines.append(f"- contact {a['person_id']} (tx {a['tx_id']}): "
+                         f"«{a['old_name']}» → {a['new_last_name']} {a['new_first_name']}")
+    if m:
+        lines.append(f"### Слияния дубликатов — high confidence ({len(m)})")
+        for a in m:
+            lines.append(f"- keep {a['keep_id']} ← dup {a['dup_id']} "
+                         f"(signals: {', '.join(a['match_signals'])})")
+    if pd:
+        lines.append(f"### Возможные дубликаты — проверить ({len(pd)})")
+        for a in pd:
+            lines.append(f"- {a['payer_id']} ↔ {a['buyer_id']} (совпало имя)")
+    if fr:
+        lines.append(f"### ⚠️ Анти-фрод — проверить вручную ({len(fr)})")
+        for a in fr:
+            lines.append(f"- tx {a['tx_id']}: плательщик {a['payer_name']} ({a['payer_id']}) "
+                         f"≠ покупатель {a['buyer_name']} ({a['buyer_id']}), "
+                         f"сертификат {a['cert_account']}")
+    return lines
+
+
 def normalize_ozma_state(s):
     if not s:
         return "unknown"

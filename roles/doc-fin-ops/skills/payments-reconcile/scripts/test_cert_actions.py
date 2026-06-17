@@ -9,6 +9,8 @@ from reconcile import (
     build_comment_actions,
     build_fio_fixes,
     build_dedup_and_fraud,
+    build_cert_actions,
+    render_cert_section,
 )
 
 
@@ -159,6 +161,38 @@ class TestDedupAndFraud(unittest.TestCase):
         rows = [self._usage(10, 26, tx_id=1), self._usage(10, 26, tx_id=2)]
         m, pd, fr = build_dedup_and_fraud(rows, people, {})
         self.assertEqual(len(fr), 1)  # same pair reported once
+
+
+class TestBuildCertActionsAndRender(unittest.TestCase):
+    def test_assembles_all_buckets(self):
+        from reconcile import build_cert_actions
+        ozma = [{"id": 38269, "is_certificate_payment": True,
+                 "account_from_type": "Сертификат", "account_from": 28330,
+                 "account_from_name": "Сертификат на программу", "comment": None,
+                 "customer": 10, "cert_buyer_id": 10}]
+        plan = build_cert_actions(ozma, [], {}, {})
+        self.assertEqual(len(plan["comments"]), 1)
+        self.assertIn("fio_fixes", plan)
+        self.assertIn("merges", plan)
+        self.assertIn("possible_duplicates", plan)
+        self.assertIn("fraud_flags", plan)
+
+    def test_render_empty(self):
+        from reconcile import render_cert_section
+        plan = {"comments": [], "fio_fixes": [], "merges": [],
+                "possible_duplicates": [], "fraud_flags": []}
+        out = "\n".join(render_cert_section(plan))
+        self.assertIn("## 🎁 Сертификаты", out)
+        self.assertIn("Сертификатных действий нет", out)
+
+    def test_render_counts(self):
+        from reconcile import render_cert_section
+        plan = {"comments": [{"tx_id": 1, "account_from_name": "X",
+                              "current_comment": None, "proposed_tag": CERT_USAGE_TAG}],
+                "fio_fixes": [], "merges": [], "possible_duplicates": [],
+                "fraud_flags": []}
+        out = "\n".join(render_cert_section(plan))
+        self.assertIn("Комментарии к авто-использованию (1)", out)
 
 
 if __name__ == "__main__":
