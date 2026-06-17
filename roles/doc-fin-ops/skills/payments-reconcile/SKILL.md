@@ -94,12 +94,12 @@ User says one of:
    `{people: [...], communication_ways: [...]}`:
    ```funql
    SELECT id, first_name, last_name, patronymic, nickname
-   FROM "base"."people" WHERE id IN (<customer_ids>)
+   FROM "base"."people" WHERE id IN (<customer_and_buyer_ids>)
    ```
    ```funql
    SELECT contact, type, data
    FROM "base"."communication_ways"
-   WHERE is_deleted = false AND contact IN (<customer_ids>)
+   WHERE is_deleted = false AND contact IN (<customer_and_buyer_ids>)
    ```
    If there are no `customer` ids, write `{"people": [], "communication_ways": []}`
    (or skip the file — reconcile.py treats a missing file as no contact data, and
