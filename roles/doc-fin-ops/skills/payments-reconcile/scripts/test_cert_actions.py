@@ -148,6 +148,16 @@ class TestDedupAndFraud(unittest.TestCase):
         self.assertEqual(pd[0]["confidence"], "medium")
         self.assertEqual(fr, [])
 
+    def test_name_subset_is_possible_duplicate_not_fraud(self):
+        from reconcile import build_dedup_and_fraud
+        people = {10: {"first_name": "Станислав", "last_name": "Петровский",
+                       "patronymic": "Анатольевич"},
+                  26: {"first_name": "Станислав", "last_name": "Петровский"}}
+        m, pd, fr = build_dedup_and_fraud([self._usage(10, 26)], people, {})
+        self.assertEqual((m, fr), ([], []))
+        self.assertEqual(len(pd), 1)
+        self.assertEqual(pd[0]["confidence"], "medium")
+
     def test_fraud_when_no_signal(self):
         from reconcile import build_dedup_and_fraud
         people = {10: {"first_name": "Олег", "last_name": "Новокрещенов"},

@@ -377,7 +377,7 @@ def build_dedup_and_fraud(ozma_txs, people_by_id, comm_by_contact):
             merges.append({"keep_id": pair[0], "dup_id": pair[1],
                            "payer_id": payer, "buyer_id": buyer,
                            "match_signals": signals, "confidence": "high"})
-        elif pn and bn and pn == bn:
+        elif pn and bn and (pn <= bn or bn <= pn):
             possible_dups.append({"payer_id": payer, "buyer_id": buyer,
                                   "match_signals": ["name"], "confidence": "medium"})
         else:
