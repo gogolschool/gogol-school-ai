@@ -319,6 +319,69 @@ def build_fio_fixes(ozma_txs, provider_txs) -> list:
     return out
 
 
+def _contact_dedup_keys(pid, people_by_id, comm_by_contact):
+    """(name_tokens, emails, phones) for a contact id, for duplicate detection."""
+    name_toks = set()
+    per = people_by_id.get(pid, {})
+    for f in ("first_name", "last_name", "patronymic"):
+        name_toks |= _name_tokens(per.get(f))
+    emails, phones = set(), set()
+    for cw in comm_by_contact.get(pid, []):
+        t, data = cw.get("type"), cw.get("data")
+        if t == "Email":
+            v = _norm_email(data)
+            if v:
+                emails.add(v)
+        elif t == "Телефон":
+            v = _norm_phone(data)
+            if v:
+                phones.add(v)
+    return name_toks, emails, phones
+
+
+def build_dedup_and_fraud(ozma_txs, people_by_id, comm_by_contact):
+    """For cert-usage rows where payer != certificate buyer:
+      high confidence (shared phone/email) -> merge proposal,
+      name-only match -> possible duplicate,
+      otherwise -> anti-fraud flag.
+    Returns (merges, possible_duplicates, fraud_flags)."""
+    merges, possible_dups, fraud = [], [], []
+    seen_pairs = set()
+    for row in ozma_txs:
+        if not is_cert_usage(row):
+            continue
+        payer = _ref_id(row.get("customer"))
+        buyer = _ref_id(row.get("cert_buyer_id"))
+        if payer is None or buyer is None or payer == buyer:
+            continue
+        pair = (min(payer, buyer), max(payer, buyer))
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        pn, pe, pp = _contact_dedup_keys(payer, people_by_id, comm_by_contact)
+        bn, be, bp = _contact_dedup_keys(buyer, people_by_id, comm_by_contact)
+        signals = []
+        if pe & be:
+            signals.append("email")
+        if pp & bp:
+            signals.append("phone")
+        if signals:
+            merges.append({"keep_id": pair[0], "dup_id": pair[1],
+                           "payer_id": payer, "buyer_id": buyer,
+                           "match_signals": signals, "confidence": "high"})
+        elif pn and bn and pn == bn:
+            possible_dups.append({"payer_id": payer, "buyer_id": buyer,
+                                  "match_signals": ["name"], "confidence": "medium"})
+        else:
+            fraud.append({"tx_id": _ref_id(row.get("id")),
+                          "cert_account": _ref_id(row.get("account_from")),
+                          "payer_id": payer,
+                          "payer_name": " ".join(sorted(pn)) or str(payer),
+                          "buyer_id": buyer,
+                          "buyer_name": " ".join(sorted(bn)) or str(buyer)})
+    return merges, possible_dups, fraud
+
+
 def normalize_ozma_state(s):
     if not s:
         return "unknown"
