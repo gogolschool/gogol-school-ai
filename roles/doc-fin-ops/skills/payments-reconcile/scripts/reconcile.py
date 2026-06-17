@@ -233,6 +233,30 @@ def compare_contacts(comparable, provider_txs, ozma_txs,
     return dict(results)
 
 
+# --- Certificate auto-actions (Notion cases 1-4) --------------------------
+
+CERT_USAGE_TAG = "автоматическое использование сертификата"
+_KARROT_RE = re.compile(r"кэррот", re.IGNORECASE)
+
+
+def _as_bool(v):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("t", "true", "1", "yes")
+    return bool(v)
+
+
+def is_cert_usage(row) -> bool:
+    """A certificate auto-usage row: money drawn from a certificate account."""
+    return _as_bool(row.get("is_certificate_payment")) and \
+        row.get("account_from_type") == "Сертификат"
+
+
+def _comment_has_tag(comment, tag) -> bool:
+    return tag.lower() in (comment or "").lower()
+
+
 def normalize_ozma_state(s):
     if not s:
         return "unknown"
