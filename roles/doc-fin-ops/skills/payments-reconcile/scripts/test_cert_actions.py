@@ -11,6 +11,7 @@ from reconcile import (
     build_dedup_and_fraud,
     build_cert_actions,
     render_cert_section,
+    render_markdown,
 )
 
 
@@ -193,6 +194,18 @@ class TestBuildCertActionsAndRender(unittest.TestCase):
                 "fraud_flags": []}
         out = "\n".join(render_cert_section(plan))
         self.assertIn("Комментарии к авто-использованию (1)", out)
+
+
+class TestRenderMarkdownIncludesCert(unittest.TestCase):
+    def test_section_present_in_report(self):
+        from reconcile import render_markdown
+        plan = {"comments": [{"tx_id": 9, "account_from_name": "Подарок",
+                              "current_comment": None, "proposed_tag": CERT_USAGE_TAG}],
+                "fio_fixes": [], "merges": [], "possible_duplicates": [], "fraud_flags": []}
+        md = render_markdown("2026-06-17", {"transactions": []}, [], {}, {}, {},
+                             {"sources": {}}, plan)
+        self.assertIn("## 🎁 Сертификаты", md)
+        self.assertIn("Комментарии к авто-использованию (1)", md)
 
 
 if __name__ == "__main__":

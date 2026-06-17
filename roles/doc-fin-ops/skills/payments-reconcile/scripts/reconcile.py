@@ -673,7 +673,8 @@ def match_level_2(provider_sums: Dict[Tuple[int, str], int],
 
 
 def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
-                    level1: Dict, level2: Dict, contacts: Dict, meta: dict) -> str:
+                    level1: Dict, level2: Dict, contacts: Dict, meta: dict,
+                    cert: Optional[dict] = None) -> str:
     lines = []
     fetched = meta.get("finished_at_utc", "")
     lines.append(f"# Сверка платежей за {date}")
@@ -778,6 +779,10 @@ def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
                     lines.append(f"- \U0001f7e1 `{d['key']}` {d['field']}: "
                                  f"provider={d['provider']} / ozma={ozma_str}")
 
+    # Certificate auto-actions
+    if cert is not None:
+        lines.extend(render_cert_section(cert))
+
     # Advisory
     lines.append("")
     lines.append("## Что делать")
@@ -797,6 +802,16 @@ def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
         advisory.append(f"- Контакты missing_in_ozma ({n_c_missing}): у контакта нет этого канала — можно добавить communication_way вручную.")
     if n_c_mismatch:
         advisory.append(f"- Контакты mismatch ({n_c_mismatch}): значение провайдера не найдено среди контактов покупателя — проверить, не другой ли это человек / не сменились ли данные / корректность ФИО.")
+    if cert is not None:
+        n_cc = len(cert["comments"])
+        n_ff = len(cert["fio_fixes"])
+        n_mg = len(cert["merges"])
+        n_fr = len(cert["fraud_flags"])
+        if n_cc or n_ff or n_mg:
+            advisory.append(f"- 🎁 Сертификаты: предложено {n_cc} комментариев, "
+                            f"{n_ff} правок ФИО, {n_mg} слияний — применить после подтверждения (шаг 7 SKILL.md).")
+        if n_fr:
+            advisory.append(f"- ⚠️ Анти-фрод: {n_fr} погашений сертификата чужим лицом — проверить вручную.")
     if not advisory:
         advisory.append("- Расхождений нет. ✅")
     lines.extend(advisory)
@@ -847,9 +862,15 @@ def main():
     contacts = compare_contacts(comparable, provider_txs, ozma.get("transactions", []),
                                 people_by_id, comm_by_contact)
 
+    cert = build_cert_actions(ozma.get("transactions", []), provider_txs,
+                              people_by_id, comm_by_contact)
+    (dir_ / "cert_actions.json").write_text(
+        json.dumps(cert, ensure_ascii=False, indent=2), encoding="utf-8")
+
     meta_path = dir_ / "meta.json"
     meta = load_json(meta_path) if meta_path.exists() else {}
-    md = render_markdown(ozma.get("date", "?"), ozma, provider_txs, level1, level2, contacts, meta)
+    md = render_markdown(ozma.get("date", "?"), ozma, provider_txs, level1, level2,
+                         contacts, meta, cert)
     (dir_ / "report.md").write_text(md, encoding="utf-8")
     print(md)
 
