@@ -255,6 +255,7 @@ OZMA_CLIENT_SECRET=значение
 SITE_BEARER=значение
 UNISENDER_TOKEN=значение
 TELEGRAM_BEARER=значение
+RECONCILE_API_KEY=значение
 
 Если какого-то значения нет (или это плейсхолдер TODO) — пропусти его строку. Никаких пояснений, только эти строки."
 
@@ -271,7 +272,7 @@ TELEGRAM_BEARER=значение
       n="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
       # Игнорируем чужие/мусорные переменные
       case "$n" in
-        OZMA_BEARER|OZMA_CLIENT_SECRET|SITE_BEARER|UNISENDER_TOKEN|TELEGRAM_BEARER) ;;
+        OZMA_BEARER|OZMA_CLIENT_SECRET|SITE_BEARER|UNISENDER_TOKEN|TELEGRAM_BEARER|RECONCILE_API_KEY) ;;
         *) continue ;;
       esac
       # Trim whitespace
@@ -297,6 +298,8 @@ need_general=0
 for v in OZMA_BEARER OZMA_CLIENT_SECRET SITE_BEARER UNISENDER_TOKEN TELEGRAM_BEARER; do
   [[ -z "${!v:-}" ]] && need_general=1
 done
+# RECONCILE_API_KEY нужен только скиллу check-transactions — фетчим, если он установлен.
+[[ -d "$CLAUDE_DIR/skills/check-transactions" && -z "${RECONCILE_API_KEY:-}" ]] && need_general=1
 
 if (( need_general )) && command -v claude >/dev/null 2>&1; then
   echo
@@ -311,6 +314,20 @@ if (( need_general )) && command -v claude >/dev/null 2>&1; then
       yellow "  Не получилось (нет доступа к Notion или Notion MCP не подключён). Спрошу вручную."
     fi
   fi
+fi
+
+# ── check-transactions: собственный .env скилла (OZMABOT_URL + RECONCILE_API_KEY) ──
+# Скрипты скилла читают .env из своей папки, а не из ~/.gogol-ai/.env.
+CT_SKILL_DIR="$CLAUDE_DIR/skills/check-transactions"
+if [[ -d "$CT_SKILL_DIR" ]]; then
+  [[ -z "${RECONCILE_API_KEY:-}" ]] && ask_secret RECONCILE_API_KEY "API-ключ OzmaBot reconcile для скилла check-transactions (из $NOTION_TOKENS_HINT)"
+  : "${OZMABOT_URL:=https://ozma.gogol.school:5006}"
+  {
+    echo "OZMABOT_URL=$OZMABOT_URL"
+    echo "RECONCILE_API_KEY=$RECONCILE_API_KEY"
+  } > "$CT_SKILL_DIR/.env"
+  chmod 600 "$CT_SKILL_DIR/.env"
+  green "✓ $CT_SKILL_DIR/.env (OZMABOT_URL + RECONCILE_API_KEY)"
 fi
 
 declare -A MCP_NEEDED

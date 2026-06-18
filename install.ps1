@@ -184,6 +184,7 @@ OZMA_CLIENT_SECRET=значение
 SITE_BEARER=значение
 UNISENDER_TOKEN=значение
 TELEGRAM_BEARER=значение
+RECONCILE_API_KEY=значение
 
 Если какого-то значения нет (или это плейсхолдер TODO) — пропусти его строку. Никаких пояснений, только эти строки.
 "@
@@ -196,7 +197,7 @@ TELEGRAM_BEARER=значение
     if (-not $output) { return $false }
 
     $found = 0
-    $allowedNames = @("OZMA_BEARER","OZMA_CLIENT_SECRET","SITE_BEARER","UNISENDER_TOKEN","TELEGRAM_BEARER")
+    $allowedNames = @("OZMA_BEARER","OZMA_CLIENT_SECRET","SITE_BEARER","UNISENDER_TOKEN","TELEGRAM_BEARER","RECONCILE_API_KEY")
     foreach ($line in ($output -split "`n")) {
         if ($line -match '^([A-Z_]+)=(.+)$') {
             $n = $matches[1].Trim()
@@ -217,6 +218,9 @@ $needGeneral = $false
 foreach ($v in @("OZMA_BEARER","OZMA_CLIENT_SECRET","SITE_BEARER","UNISENDER_TOKEN","TELEGRAM_BEARER")) {
     if (-not ($Secrets.ContainsKey($v) -and $Secrets[$v])) { $needGeneral = $true; break }
 }
+# RECONCILE_API_KEY нужен только скиллу check-transactions — фетчим, если он установлен.
+$ctSkillDir = Join-Path "$WorkDir\.claude\skills" "check-transactions"
+if ((Test-Path $ctSkillDir) -and -not ($Secrets.ContainsKey("RECONCILE_API_KEY") -and $Secrets["RECONCILE_API_KEY"])) { $needGeneral = $true }
 if ($needGeneral -and (Get-Command claude -ErrorAction SilentlyContinue)) {
     Write-Host ""
     Write-Warn "Можно подтянуть общие токены MCP из Notion автоматически."
@@ -229,6 +233,15 @@ if ($needGeneral -and (Get-Command claude -ErrorAction SilentlyContinue)) {
             Write-Warn "Не получилось (нет доступа к Notion или Notion MCP не подключён). Спрошу вручную."
         }
     }
+}
+
+# ── check-transactions: собственный .env скилла (OZMABOT_URL + RECONCILE_API_KEY) ──
+# Скрипты скилла читают .env из своей папки, а не из общего .env.
+if (Test-Path $ctSkillDir) {
+    $reconKey = Get-Secret "RECONCILE_API_KEY" "API-ключ OzmaBot reconcile для скилла check-transactions (из $NotionTokensHint)"
+    $ozmabotUrl = if ($Secrets.ContainsKey("OZMABOT_URL") -and $Secrets["OZMABOT_URL"]) { $Secrets["OZMABOT_URL"] } else { "https://ozma.gogol.school:5006" }
+    "OZMABOT_URL=$ozmabotUrl`nRECONCILE_API_KEY=$reconKey" | Set-Content -Path (Join-Path $ctSkillDir ".env")
+    Write-Ok "$ctSkillDir\.env (OZMABOT_URL + RECONCILE_API_KEY)"
 }
 
 # Объединение MCP по всем ролям

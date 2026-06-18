@@ -162,7 +162,11 @@ has a different value) or `missing_in_ozma` (Ozma has none). See the
 
 ## Setting up the skill
 
-If `.env` does not exist, copy from `.env.example` and fill in:
+`install.sh` создаёт `.env` автоматически: подтягивает `RECONCILE_API_KEY` из
+Notion (🔐 Токены MCP) и пишет `OZMABOT_URL` + `RECONCILE_API_KEY` в
+`~/.claude/skills/check-transactions/.env`.
+
+Если ставишь скилл вручную (без install.sh) и `.env` нет — скопируй из примера:
 ```bash
 cp ~/.claude/skills/check-transactions/.env.example ~/.claude/skills/check-transactions/.env
 # edit .env, set OZMABOT_URL and RECONCILE_API_KEY (same as in OzmaBot/reconcile/reconcile.env)
