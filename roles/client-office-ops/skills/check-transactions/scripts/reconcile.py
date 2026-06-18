@@ -182,8 +182,7 @@ def compare_contacts(comparable, provider_txs, ozma_txs,
         oid = str(row.get("tks_order_id") or "")
         if not oid:
             continue
-        for raw_acc in (row.get("account_to"), row.get("account_from")):
-            acc = raw_acc["id"] if isinstance(raw_acc, dict) else raw_acc
+        for acc in (row.get("account_to"), row.get("account_from")):
             if (acc, oid) in comparable and (acc, oid) not in snap_by:
                 snap_by[(acc, oid)] = row
 
@@ -234,6 +233,214 @@ def compare_contacts(comparable, provider_txs, ozma_txs,
     return dict(results)
 
 
+# --- Certificate auto-actions (Notion cases 1-4) --------------------------
+
+CERT_USAGE_TAG = "автоматическое использование сертификата"
+_KARROT_RE = re.compile(r"кэррот", re.IGNORECASE)
+
+
+def _as_bool(v):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("t", "true", "1", "yes")
+    return bool(v)
+
+
+def is_cert_usage(row) -> bool:
+    """A certificate auto-usage row: money drawn from a certificate account."""
+    return _as_bool(row.get("is_certificate_payment")) and \
+        row.get("account_from_type") == "Сертификат"
+
+
+def _comment_has_tag(comment, tag) -> bool:
+    return tag.lower() in (comment or "").lower()
+
+
+def build_comment_actions(ozma_txs) -> list:
+    """Cert-usage rows whose comment lacks the tag → proposed comment writes."""
+    out = []
+    for row in ozma_txs:
+        if not is_cert_usage(row):
+            continue
+        cur = row.get("comment")
+        if _comment_has_tag(cur, CERT_USAGE_TAG):
+            continue
+        out.append({
+            "tx_id": _ref_id(row.get("id")),
+            "account_from_name": row.get("account_from_name"),
+            "current_comment": cur,
+            "proposed_tag": CERT_USAGE_TAG,
+        })
+    return out
+
+
+def provider_name_parts(tx):
+    """(first_name, last_name) from provider JsonData; (None, None) if not cleanly split."""
+    jd = _parse_jsondata(tx.get("raw") or {})
+    first = _ci_get(jd, "firstName")
+    last = _ci_get(jd, "lastName")
+    if first and last:
+        return str(first).strip(), str(last).strip()
+    return None, None
+
+
+def build_fio_fixes(ozma_txs, provider_txs, people_by_id) -> list:
+    """«Кэррот Пользователь» masked contacts → proposed first/last-name fixes.
+
+    The masked name lives on the linked contact card (base.people), surfaced here
+    via people_by_id; the real name comes from the matching provider transaction.
+    """
+    prov_by = {}
+    for tx in provider_txs:
+        mp = str(tx.get("merchant_payment_id") or "")
+        if mp:
+            prov_by[(tx.get("expected_ozma_account_id"), mp)] = tx
+    out = []
+    seen_pids = set()
+    for row in ozma_txs:
+        pid = _ref_id(row.get("customer"))
+        if pid is None or pid in seen_pids:
+            continue
+        per = people_by_id.get(pid) or {}
+        cur_name = " ".join(p for p in (per.get("last_name"), per.get("first_name"),
+                                        per.get("patronymic")) if p)
+        if not _KARROT_RE.search(cur_name):
+            continue
+        role_info = _ozma_row_role(row)
+        acc = role_info[0] if role_info else None
+        tx = prov_by.get((acc, str(row.get("tks_order_id") or "")))
+        if not tx:
+            continue
+        first, last = provider_name_parts(tx)
+        if not (first and last):
+            continue
+        seen_pids.add(pid)
+        out.append({
+            "person_id": pid,
+            "tx_id": _ref_id(row.get("id")),
+            "old_name": cur_name,
+            "new_first_name": first,
+            "new_last_name": last,
+            "source": "provider",
+        })
+    return out
+
+
+def _contact_dedup_keys(pid, people_by_id, comm_by_contact):
+    """(name_tokens, emails, phones) for a contact id, for duplicate detection."""
+    name_toks = set()
+    per = people_by_id.get(pid, {})
+    for f in ("first_name", "last_name", "patronymic"):
+        name_toks |= _name_tokens(per.get(f))
+    emails, phones = set(), set()
+    for cw in comm_by_contact.get(pid, []):
+        t, data = cw.get("type"), cw.get("data")
+        if t == "Email":
+            v = _norm_email(data)
+            if v:
+                emails.add(v)
+        elif t == "Телефон":
+            v = _norm_phone(data)
+            if v:
+                phones.add(v)
+    return name_toks, emails, phones
+
+
+def build_dedup_and_fraud(ozma_txs, people_by_id, comm_by_contact):
+    """For cert-usage rows where payer != certificate buyer:
+      high confidence (shared phone/email) -> merge proposal,
+      name-only match -> possible duplicate,
+      otherwise -> anti-fraud flag.
+    Returns (merges, possible_duplicates, fraud_flags)."""
+    merges, possible_dups, fraud = [], [], []
+    seen_pairs = set()
+    for row in ozma_txs:
+        if not is_cert_usage(row):
+            continue
+        payer = _ref_id(row.get("customer"))
+        buyer = _ref_id(row.get("cert_buyer_id"))
+        if payer is None or buyer is None or payer == buyer:
+            continue
+        pair = (min(payer, buyer), max(payer, buyer))
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        pn, pe, pp = _contact_dedup_keys(payer, people_by_id, comm_by_contact)
+        bn, be, bp = _contact_dedup_keys(buyer, people_by_id, comm_by_contact)
+        signals = []
+        if pe & be:
+            signals.append("email")
+        if pp & bp:
+            signals.append("phone")
+        if signals:
+            merges.append({"keep_id": pair[0], "dup_id": pair[1],
+                           "payer_id": payer, "buyer_id": buyer,
+                           "match_signals": signals, "confidence": "high"})
+        elif pn and bn and (pn <= bn or bn <= pn):
+            possible_dups.append({"payer_id": payer, "buyer_id": buyer,
+                                  "match_signals": ["name"], "confidence": "medium"})
+        else:
+            fraud.append({"tx_id": _ref_id(row.get("id")),
+                          "cert_account": _ref_id(row.get("account_from")),
+                          "payer_id": payer,
+                          "payer_name": " ".join(sorted(pn)) or str(payer),
+                          "buyer_id": buyer,
+                          "buyer_name": " ".join(sorted(bn)) or str(buyer)})
+    return merges, possible_dups, fraud
+
+
+def build_cert_actions(ozma_txs, provider_txs, people_by_id, comm_by_contact) -> dict:
+    """Assemble the full certificate-actions plan."""
+    merges, possible_dups, fraud = build_dedup_and_fraud(
+        ozma_txs, people_by_id, comm_by_contact)
+    return {
+        "comments": build_comment_actions(ozma_txs),
+        "fio_fixes": build_fio_fixes(ozma_txs, provider_txs, people_by_id),
+        "merges": merges,
+        "possible_duplicates": possible_dups,
+        "fraud_flags": fraud,
+    }
+
+
+def render_cert_section(plan: dict) -> list:
+    """Markdown lines for the 🎁 Сертификаты section."""
+    c = plan["comments"]
+    f = plan["fio_fixes"]
+    m = plan["merges"]
+    pd = plan["possible_duplicates"]
+    fr = plan["fraud_flags"]
+    lines = ["", "## 🎁 Сертификаты", ""]
+    if not any((c, f, m, pd, fr)):
+        lines.append("_Сертификатных действий нет._")
+        return lines
+    if c:
+        lines.append(f"### Комментарии к авто-использованию ({len(c)})")
+        for a in c:
+            lines.append(f"- tx {a['tx_id']} ({a['account_from_name']}): + «{a['proposed_tag']}»")
+    if f:
+        lines.append(f"### Правка ФИО «Кэррот» ({len(f)})")
+        for a in f:
+            lines.append(f"- contact {a['person_id']} (tx {a['tx_id']}): "
+                         f"«{a['old_name']}» → {a['new_last_name']} {a['new_first_name']}")
+    if m:
+        lines.append(f"### Слияния дубликатов — high confidence ({len(m)})")
+        for a in m:
+            lines.append(f"- keep {a['keep_id']} ← dup {a['dup_id']} "
+                         f"(signals: {', '.join(a['match_signals'])})")
+    if pd:
+        lines.append(f"### Возможные дубликаты — проверить ({len(pd)})")
+        for a in pd:
+            lines.append(f"- {a['payer_id']} ↔ {a['buyer_id']} (совпало имя)")
+    if fr:
+        lines.append(f"### ⚠️ Анти-фрод — проверить вручную ({len(fr)})")
+        for a in fr:
+            lines.append(f"- tx {a['tx_id']}: плательщик {a['payer_name']} ({a['payer_id']}) "
+                         f"≠ покупатель {a['buyer_name']} ({a['buyer_id']}), "
+                         f"сертификат {a['cert_account']}")
+    return lines
+
+
 def normalize_ozma_state(s):
     if not s:
         return "unknown"
@@ -279,13 +486,11 @@ def _ozma_row_role(row: dict) -> Optional[Tuple[int, str]]:
     Returns None if the row doesn't touch any tracked acquiring account.
     """
     acc_to = row.get("account_to")
-    acc_to_id = acc_to["id"] if isinstance(acc_to, dict) else acc_to
-    if acc_to_id in ACCOUNT_IDS:
-        return acc_to_id, "capture"
+    if acc_to in ACCOUNT_IDS:
+        return acc_to, "capture"
     acc_from = row.get("account_from")
-    acc_from_id = acc_from["id"] if isinstance(acc_from, dict) else acc_from
-    if acc_from_id in ACCOUNT_IDS:
-        return acc_from_id, "refund"
+    if acc_from in ACCOUNT_IDS:
+        return acc_from, "refund"
     return None
 
 
@@ -476,7 +681,8 @@ def match_level_2(provider_sums: Dict[Tuple[int, str], int],
 
 
 def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
-                    level1: Dict, level2: Dict, contacts: Dict, meta: dict) -> str:
+                    level1: Dict, level2: Dict, contacts: Dict, meta: dict,
+                    cert: Optional[dict] = None) -> str:
     lines = []
     fetched = meta.get("finished_at_utc", "")
     lines.append(f"# Сверка платежей за {date}")
@@ -581,6 +787,10 @@ def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
                     lines.append(f"- \U0001f7e1 `{d['key']}` {d['field']}: "
                                  f"provider={d['provider']} / ozma={ozma_str}")
 
+    # Certificate auto-actions
+    if cert is not None:
+        lines.extend(render_cert_section(cert))
+
     # Advisory
     lines.append("")
     lines.append("## Что делать")
@@ -600,6 +810,16 @@ def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
         advisory.append(f"- Контакты missing_in_ozma ({n_c_missing}): у контакта нет этого канала — можно добавить communication_way вручную.")
     if n_c_mismatch:
         advisory.append(f"- Контакты mismatch ({n_c_mismatch}): значение провайдера не найдено среди контактов покупателя — проверить, не другой ли это человек / не сменились ли данные / корректность ФИО.")
+    if cert is not None:
+        n_cc = len(cert["comments"])
+        n_ff = len(cert["fio_fixes"])
+        n_mg = len(cert["merges"])
+        n_fr = len(cert["fraud_flags"])
+        if n_cc or n_ff or n_mg:
+            advisory.append(f"- 🎁 Сертификаты: предложено {n_cc} комментариев, "
+                            f"{n_ff} правок ФИО, {n_mg} слияний — применить после подтверждения (шаг 7 SKILL.md).")
+        if n_fr:
+            advisory.append(f"- ⚠️ Анти-фрод: {n_fr} погашений сертификата чужим лицом — проверить вручную.")
     if not advisory:
         advisory.append("- Расхождений нет. ✅")
     lines.extend(advisory)
@@ -650,9 +870,15 @@ def main():
     contacts = compare_contacts(comparable, provider_txs, ozma.get("transactions", []),
                                 people_by_id, comm_by_contact)
 
+    cert = build_cert_actions(ozma.get("transactions", []), provider_txs,
+                              people_by_id, comm_by_contact)
+    (dir_ / "cert_actions.json").write_text(
+        json.dumps(cert, ensure_ascii=False, indent=2), encoding="utf-8")
+
     meta_path = dir_ / "meta.json"
     meta = load_json(meta_path) if meta_path.exists() else {}
-    md = render_markdown(ozma.get("date", "?"), ozma, provider_txs, level1, level2, contacts, meta)
+    md = render_markdown(ozma.get("date", "?"), ozma, provider_txs, level1, level2,
+                         contacts, meta, cert)
     (dir_ / "report.md").write_text(md, encoding="utf-8")
     print(md)
 
