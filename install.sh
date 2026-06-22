@@ -10,7 +10,7 @@
 #
 # Доступные роли:
 #   doc-fin-ops, client-office-ops, senior-admin, marketing-assistant,
-#   smm, brand-pr, product-manager, student-comms, product-assistant, analyst
+#   smm, brand-pr, product-manager, student-comms, analyst
 
 set -euo pipefail
 
@@ -72,7 +72,7 @@ if [[ ${#ROLES[@]} -eq 0 ]]; then
   red "Не указано ни одной роли."
   echo "Использование: bash install.sh [--folder <name>] <role1> [role2]..."
   echo "Доступные: doc-fin-ops, client-office-ops, senior-admin, marketing-assistant,"
-  echo "           smm, brand-pr, product-manager, student-comms, product-assistant, analyst"
+  echo "           smm, brand-pr, product-manager, student-comms, analyst"
   exit 1
 fi
 
@@ -476,6 +476,11 @@ for mcp_name in "${!MCP_NEEDED[@]}"; do
     unisender)                                     setup_unisender ;;
     telegram|telegram_ozma_mcp)                    setup_telegram ;;
     google-sheets|google-drive|google_sheets|google_docs) setup_google ;;
+    google-calendar)
+      yellow "▸ google-calendar — настраивается вручную (локальный OAuth-сервер)"
+      echo "  1) claude mcp add --scope user google-calendar -e GOOGLE_OAUTH_CREDENTIALS=\$HOME/gcp-oauth.keys.json -- npx -y @cocal/google-calendar-mcp"
+      echo "  2) GOOGLE_OAUTH_CREDENTIALS=\$HOME/gcp-oauth.keys.json npx -y @cocal/google-calendar-mcp auth  → войти под Google с доступом к календарю GOGOL school"
+      echo "  Нужен файл ~/gcp-oauth.keys.json. Подробности — в карточке роли / памяти reference_google_calendar_mcp." ;;
     notion)
       yellow "▸ notion — встроен в Claude Desktop"
       echo "  Подключи вручную: Claude Desktop → Settings → Connectors → Notion" ;;
