@@ -13,6 +13,9 @@
     "google-drive": {
       "_purpose": "Google Drive — материалы, документы программ."
     },
+    "gogol-school-site": {
+      "_purpose": "Bitrix-сайт gogolschool.ru — ссылка на оплату и /schedule/ (для /newproduct), сверка сайта (для /check-products)."
+    },
     "google-calendar": {
       "_purpose": "Google Calendar — внесение занятий программ в календарь GOGOL school (gschool182@gmail.com). Настраивается вручную: см. карточку роли в Notion / память reference_google_calendar_mcp."
     }
