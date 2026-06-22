@@ -26,9 +26,8 @@ roles/
   marketing-assistant/    ← Менеджер по маркетингу
   smm/                    ← СММ
   brand-pr/               ← Бренд-менеджер + PR
-  product-manager/        ← Менеджер программ
+  product-manager/        ← Менеджер программ (+ помощник): продукты, расписание, календарь
   student-comms/          ← Менеджер по общению со студентами
-  product-assistant/      ← Помощник менеджера продукта
   analyst/                ← Аналитик
 
 install.sh                ← установщик для macOS / Linux

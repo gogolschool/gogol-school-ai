@@ -12,6 +12,9 @@
     },
     "google-drive": {
       "_purpose": "Google Drive — материалы, документы программ."
+    },
+    "google-calendar": {
+      "_purpose": "Google Calendar — внесение занятий программ в календарь GOGOL school (gschool182@gmail.com). Настраивается вручную: см. карточку роли в Notion / память reference_google_calendar_mcp."
     }
   }
 }
