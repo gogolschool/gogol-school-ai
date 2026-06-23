@@ -2,3 +2,10 @@
 .env
 .env.local
 *.log
+
+# Локальные MCP-конфиги с секретами (токены живут в Notion «🔐 Токены MCP» / ~/.gogol-ai/.env).
+# Трекаемые roles/*/.mcp.json — без секретов — остаются под гитом.
+.mcp.local.json
+**/.mcp.local.json
+.claude/settings.local.json
+**/settings.local.json
