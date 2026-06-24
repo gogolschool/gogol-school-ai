@@ -22,6 +22,7 @@
 
 - Внесение банковской выписки → skill [`/bank`](skills/bank/SKILL.md)
 - Заведение нового договора → skill [`/newcontract`](skills/newcontract/SKILL.md)
+- Проверка справки об оплате обучения (налоговый вычет) → skill [`/tax-cert`](skills/tax-cert/SKILL.md)
 - Создание/корректировка транзакции в `fin.transactions`
 - Сверка платежа: заказ Bitrix → транзакция Ozma → заявка `crm.actions_for_contacts`
 - Запросы на возврат: `crm.refund_requests` → транзакция возврата через `fin.make_refund`
