@@ -286,6 +286,20 @@ function Register-CodeMcp([string]$Name, [string[]]$Args) {
     & claude mcp add --scope user $Name -- @Args
 }
 
+# Снять устаревшую регистрацию MCP (из Claude Code и из desktop-конфига).
+function Remove-LegacyMcp([string]$Name) {
+    & claude mcp remove --scope user $Name 2>$null | Out-Null
+    if (Test-Path $ClaudeDesktopCfg) {
+        try {
+            $cfg = Get-Content $ClaudeDesktopCfg -Raw | ConvertFrom-Json
+            if ($cfg.mcpServers -and $cfg.mcpServers.PSObject.Properties.Name -contains $Name) {
+                $cfg.mcpServers.PSObject.Properties.Remove($Name)
+                $cfg | ConvertTo-Json -Depth 10 | Set-Content $ClaudeDesktopCfg
+            }
+        } catch {}
+    }
+}
+
 function Install-Ozma {
     $bearer       = Get-Secret "OZMA_BEARER"        "Bearer-токен Ozma MCP"
     $clientSecret = Get-Secret "OZMA_CLIENT_SECRET" "Client Secret Ozma"
@@ -308,9 +322,18 @@ function Install-GogolSite {
     $bearer = Get-Secret "SITE_BEARER" "Bearer-токен gogol-site-remote"
     $url = "https://ozma.gogol.school/site_mcp/mcp"
     $args = @("-y","mcp-remote",$url,"--header","Authorization: Bearer $bearer")
-    Register-DesktopMcp "gogol-site-remote" @{ command="npx"; args=$args }
-    Register-CodeMcp "gogol-site-remote" (@("npx") + $args)
-    Write-Ok "gogol-site-remote"
+    Remove-LegacyMcp "gogol-site-remote"   # убрать старое имя, если ставили раньше
+    Register-DesktopMcp "gogol-school-site" @{ command="npx"; args=$args }
+    Register-CodeMcp "gogol-school-site" (@("npx") + $args)
+    Write-Ok "gogol-school-site"
+}
+function Install-Metrika {
+    $bearer = Get-Secret "METRIKA_OAUTH" "OAuth-токен Яндекс.Метрики (metrika:read)"
+    $url = "http://ozma.gogol.school:8003/mcp"
+    $args = @("-y","mcp-remote",$url,"--allow-http","--header","Authorization: Bearer $bearer")
+    Register-DesktopMcp "yandex-metrika" @{ command="npx"; args=$args }
+    Register-CodeMcp "yandex-metrika" (@("npx") + $args)
+    Write-Ok "yandex-metrika"
 }
 function Install-Unisender {
     $token = Get-Secret "UNISENDER_TOKEN" "Токен unisender"
@@ -360,12 +383,19 @@ foreach ($name in $mcpNeeded.Keys) {
     switch -Regex ($name) {
         '^ozma$'                                                   { Install-Ozma }
         '^(gogol-school-site|gogol-site-remote)$'                  { Install-GogolSite }
+        '^(yandex-metrika|yandex-metrika-mcp)$'                    { Install-Metrika }
         '^unisender$'                                              { Install-Unisender }
         '^(telegram|telegram_ozma_mcp)$'                           { Install-Telegram }
         '^(google-sheets|google-drive|google_sheets|google_docs)$' { Install-Google }
         '^notion$' {
             Write-Warn "notion — встроен в Claude Desktop"
             Write-Host "  Подключи вручную: Settings -> Connectors -> Notion" -ForegroundColor Gray
+        }
+        '^(chrome|claude-in-chrome)$' {
+            Write-Warn "chrome (Claude in Chrome) — расширение браузера, не npx-сервер"
+            Write-Host "  1) Установи расширение «Claude in Chrome» в Chrome" -ForegroundColor Gray
+            Write-Host "  2) Подключи браузер по запросу Claude в чате" -ForegroundColor Gray
+            Write-Host "  Нужно для блоков B/E/F скилла /check-site (рендер витрины, пробные, попапы)." -ForegroundColor Gray
         }
         default { Write-Warn "$name — неизвестный MCP, пропускаю" }
     }
