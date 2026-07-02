@@ -15,6 +15,15 @@
     },
     "unisender": {
       "_purpose": "Email-рассылки — отправка кампаний."
+    },
+    "gogol-school-site": {
+      "_purpose": "Bitrix-сайт gogolschool.ru — проверка витрины (раздел /programms/, карточки, ссылки оплаты) для /check-site."
+    },
+    "yandex-metrika": {
+      "_purpose": "Яндекс.Метрика (счётчик 58973071) — визиты, источники, UTM-отчёты для статистики активностей."
+    },
+    "chrome": {
+      "_purpose": "Claude in Chrome (расширение браузера, не npx-сервер) — живой рендер витрины gogolschool.ru для скилла /check-site: каталог и sold-out (блок B), пробные /trials/ (блок E), попапы и форма заявки (блок F). Ставится вручную — см. install.sh / install.ps1."
     }
   }
 }
