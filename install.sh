@@ -381,6 +381,22 @@ register_mcp_code() {
   claude mcp remove --scope user "$name" >/dev/null 2>&1 || true
   claude mcp add --scope user "$name" -- "$@"
 }
+# Снять устаревшую регистрацию MCP (из Claude Code и из desktop-конфига).
+remove_legacy_mcp() {
+  local name="$1"
+  claude mcp remove --scope user "$name" >/dev/null 2>&1 || true
+  [[ -f "$CLAUDE_DESKTOP_CFG" ]] && python3 - "$CLAUDE_DESKTOP_CFG" "$name" <<'PYEOF' || true
+import json, sys
+path, name = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(path))
+except Exception:
+    sys.exit(0)
+if isinstance(data.get("mcpServers"), dict) and name in data["mcpServers"]:
+    del data["mcpServers"][name]
+    json.dump(data, open(path, "w"), indent=2, ensure_ascii=False)
+PYEOF
+}
 
 setup_ozma() {
   ask_secret OZMA_BEARER "Bearer-токен Ozma MCP (из $NOTION_TOKENS_HINT)"
@@ -415,10 +431,22 @@ setup_gogol_site() {
   local cfg=$(python3 -c "
 import json
 print(json.dumps({'command':'npx','args':['-y','mcp-remote','$url','--header','Authorization: Bearer $SITE_BEARER']}))")
-  register_mcp_desktop "gogol-site-remote" "$cfg"
-  register_mcp_code "gogol-site-remote" npx -y mcp-remote "$url" \
+  remove_legacy_mcp "gogol-site-remote"   # убрать старое имя, если ставили раньше
+  register_mcp_desktop "gogol-school-site" "$cfg"
+  register_mcp_code "gogol-school-site" npx -y mcp-remote "$url" \
     --header "Authorization: Bearer $SITE_BEARER"
-  green "✓ gogol-site-remote"
+  green "✓ gogol-school-site"
+}
+setup_metrika() {
+  ask_secret METRIKA_OAUTH "OAuth-токен Яндекс.Метрики (metrika:read, из $NOTION_TOKENS_HINT)"
+  local url="http://ozma.gogol.school:8003/mcp"
+  local cfg=$(python3 -c "
+import json
+print(json.dumps({'command':'npx','args':['-y','mcp-remote','$url','--allow-http','--header','Authorization: Bearer $METRIKA_OAUTH']}))")
+  register_mcp_desktop "yandex-metrika" "$cfg"
+  register_mcp_code "yandex-metrika" npx -y mcp-remote "$url" --allow-http \
+    --header "Authorization: Bearer $METRIKA_OAUTH"
+  green "✓ yandex-metrika"
 }
 setup_unisender() {
   ask_secret UNISENDER_TOKEN "Токен unisender"
@@ -473,6 +501,7 @@ for mcp_name in "${!MCP_NEEDED[@]}"; do
   case "$mcp_name" in
     ozma)                                          setup_ozma ;;
     gogol-school-site|gogol-site-remote)           setup_gogol_site ;;
+    yandex-metrika|yandex-metrika-mcp)             setup_metrika ;;
     unisender)                                     setup_unisender ;;
     telegram|telegram_ozma_mcp)                    setup_telegram ;;
     google-sheets|google-drive|google_sheets|google_docs) setup_google ;;
@@ -484,6 +513,11 @@ for mcp_name in "${!MCP_NEEDED[@]}"; do
     notion)
       yellow "▸ notion — встроен в Claude Desktop"
       echo "  Подключи вручную: Claude Desktop → Settings → Connectors → Notion" ;;
+    chrome|claude-in-chrome)
+      yellow "▸ chrome (Claude in Chrome) — расширение браузера, не npx-сервер"
+      echo "  1) Установи расширение «Claude in Chrome» в Chrome"
+      echo "  2) Подключи браузер по запросу Claude в чате (откроется запрос на подключение)"
+      echo "  Нужно для блоков B/E/F скилла /check-site (живой рендер витрины, пробные, попапы)." ;;
     *) yellow "▸ $mcp_name — неизвестный MCP, пропускаю" ;;
   esac
 done
