@@ -1,6 +1,6 @@
 ---
 name: add-marketing-list
-description: Формирование маркетингового списка рассылки в OzmaDB по сегменту. Считает аудиторию по критериям (LTV, тип продукта, мастера, прогрев, прочтение писем, город, баллы, наличие сертификата, «не был N времени», комбинации + исключения), показывает количество и preview, после подтверждения создаёт запись в marketing.lists и заливает контакты в marketing.contacts_in_lists пакетами. Подтягивает мастер-промты из Notion и работает по ним. Используй, когда просят «собери список», «сделай сегмент/аудиторию для рассылки», «список холодных / по мастеру X / LTV 50–100к / купивших интенсивы», «выгрузи контакты по критерию» — даже если слово «скилл» не звучит. НЕ заводит кампанию (это /new-campaign), НЕ клонирует шаблон письма, НЕ для TG-бот рассылок по мастерам (там отдельный промт выдаёт telegram_id, а не пишет в marketing.lists).
+description: Формирование маркетингового списка рассылки в OzmaDB по сегменту. Считает аудиторию по критериям (LTV, тип продукта, мастера, прогрев, прочтение писем, город, баллы, наличие сертификата, «не был N времени», комбинации + исключения), показывает количество и preview, после подтверждения создаёт запись в marketing.lists и заливает контакты серверным action Озмы (create_list_from_selected_elements / _from_userview_elements), а не ручными insert-батчами. Подтягивает мастер-промты из Notion и работает по ним. Используй, когда просят «собери список», «сделай сегмент/аудиторию для рассылки», «список холодных / по мастеру X / LTV 50–100к / купивших интенсивы», «выгрузи контакты по критерию» — даже если слово «скилл» не звучит. НЕ заводит кампанию (это /new-campaign), НЕ клонирует шаблон письма, НЕ для TG-бот рассылок по мастерам (там отдельный промт выдаёт telegram_id, а не пишет в marketing.lists).
 ---
 
 # /add-marketing-list
@@ -12,14 +12,17 @@ description: Формирование маркетингового списка 
 ## Как работает
 
 1. **Загрузи актуальные мастер-промты из Notion** (рабочий MCP `c2755fd9-…`, не личный — память `feedback_notion_workspace_routing`):
-   - **Воркфлоу заливки** — page `358612c762af8165bd45d03618eef4f7` (пошагово: посчитать → создать список → выгрузить contact_id пагинацией → батч-insert по 100 → дедуп → проверка).
+   - **Воркфлоу заливки** — page `358612c762af8165bd45d03618eef4f7` (посчитать → создать список → залить). ⚠️ Если в промте описан ручной «батч-insert по 100» — он устарел: заливай серверным action (шаг 4).
    - **Зонтичная (источники + «что обязан уточнить»)** — page `36b612c762af81dab345d312eeb09c6c` (источник на каждый тип сегмента, готовые exclusion-подзапросы, готовые actions Озмы).
 2. **Определи тип сегмента** и согласуй критерии (см. карту источников ниже). Не угадывай пороги/тематики — переспроси.
 3. **Посчитай аудиторию ДО заливки**, покажи количество (и при необходимости несколько вариантов фильтра с числами). **Дождись подтверждения.**
-4. **Создай `marketing.lists`** (имя с датой формирования + `responsible_person`), выгрузи `contact_id` пагинацией, залей `contacts_in_lists` батчами по 100 через `mcp__ozma__transaction`.
-5. **Дедуп и отчёт:** проверь `total = uniq`, удали дубли (старые id), верни ссылку `https://ozma.gogol.school/views/marketing/list_form?id=<id>` и размер.
-
-> Прежде чем строить запрос вручную — проверь готовые actions Озмы: `marketing.create_list_from_selected_elements(ids, name)`, `crm.create_marketing_list_from_product(id)`, `crm.create_marketing_list_from_lesson(id)`. Если кейс ложится на них — используй их.
+4. **Залей ОДНИМ серверным action — контакты вручную НЕ вставляй.** Собери id сегмента (можно все разом, одним запросом — cap нужен только для preview) и вызови `mcp__ozma__run_action`:
+   - **`marketing.create_list_from_selected_elements`** с `{ list_name, ids: [все id] }` — создаёт список и вставляет ВСЕ контакты на стороне Озмы за одну транзакцию (`Promise.all`). Универсальный путь для любого сегмента.
+   - Если под сегмент есть готовый view с нужным фильтром — ещё лучше **`marketing.create_list_from_userview_elements`** с `{ list_name, ref:{schema,name}, args }`: Озма сама прокручивает view батчами по 300, id агент вообще не трогает.
+   - Продуктовые/занятийные сегменты — `crm.create_marketing_list_from_product(id)` / `crm.create_marketing_list_from_lesson(id)`.
+   - `responsible_person` проставь на списке после создания (в headless/боте — служебный id, см. `reference_campaign_responsible_person`).
+   - ⛔ **Запрещено** лить `contacts_in_lists` вручную батчами по 100 через `transaction` в цикле — это сотни round-trip'ов, распухание контекста, авто-компакция и таймаут (набито практикой 06.07.2026). Ручной insert — только крайний фолбэк для крошечных списков (<50), если action недоступен.
+5. **Отчёт:** сверь размер списка с посчитанным до заливки, верни ссылку `https://ozma.gogol.school/views/marketing/list_form?id=<id>` и размер. (Дубли не возникают: id берутся одним чистым запросом, вставка — за один action.)
 
 ## Карта источников по типам сегмента (выверено по схеме Озмы 2026-06-30)
 
@@ -57,10 +60,10 @@ description: Формирование маркетингового списка 
 ## Критические правила (грабли FunQL/Озмы — набиты практикой)
 
 - **Confirm-first.** Любая заливка в прод — только после показанного количества + preview + явного «да» (память `feedback_ozma_refunds`).
-- **Таргет:** `marketing.lists` (`name`, `notes`, `responsible_person`, `basket`) + `marketing.contacts_in_lists` (`contact` → `base.contacts`, `list`). Одна строка на контакт. **Батч 100 операций** на транзакцию.
+- **Таргет:** `marketing.lists` (`name`, `notes`, `responsible_person`, `basket`) + `marketing.contacts_in_lists` (`contact` → `base.contacts`, `list`, одна строка на контакт). **Наполнение — серверным action (шаг 4), НЕ ручными insert-батчами.**
 - **contact_id:** `base.people` и `base.contacts` делят общий id (память `reference_lead_segmentation`) — id из `students_table_all`/`base.people` кладётся в `contacts_in_lists.contact` напрямую. В `fin.transactions` поле связи — `customer`, в `crm.actions` — `contact` (оба → `base.contacts`).
 - **Нет `HAVING`** — оборачивай `GROUP BY` с агрегатным фильтром в подзапрос `FROM (...) AS sub WHERE ...` (алиас строго `AS sub`).
-- **Cap 50–100 на ответ** — пагинируй `offset`-ом, накапливай; отбрасывай `null`-маркер последней страницы.
+- **Cap 50–100 — только для preview человеку.** Для передачи id в action тяни все id разом (без пагинации). Пагинация `offset`-ом нужна лишь когда показываешь выборку в чат; отбрасывай `null`-маркер последней страницы.
 - **Агрегаты требуют `AS`** (`COUNT(id) AS cnt`).
 - **`NOT IN` ломается на NULL** — в подзапросе исключения всегда `... IS NOT NULL`.
 - **Старые до-CRM оплаты только в `crm.actions_for_contacts`**, не в `fin.transactions` — для критериев «был на продукте X» (особенно лабы/курсы) фильтруй по `actions_for_contacts`.
@@ -72,6 +75,6 @@ description: Формирование маркетингового списка 
 
 - Мастер-промты: [воркфлоу заливки](https://app.notion.com/p/358612c762af8165bd45d03618eef4f7) · [зонтичная фильтрация](https://app.notion.com/p/36b612c762af81dab345d312eeb09c6c)
 - Смежные промты: [прогрев ФОРМ ОС](https://app.notion.com/p/337612c762af81de890dca98b97883c2) · [мастера для TG](https://app.notion.com/p/34a612c762af81098b83fee7c5f7bde7) · методология [LTV-анализ](https://app.notion.com/p/335612c762af81a8b5efe4e5d505bb16) + [правила подсчёта покупок](https://app.notion.com/p/33b612c762af812aa1bdfde63d15bb26)
-- Озма (запись): `mcp__ozma__transaction`; список: `https://ozma.gogol.school/views/marketing/list_form?id=<id>`
+- Озма (запись): наполнение — `mcp__ozma__run_action` (`marketing.create_list_from_selected_elements` / `create_list_from_userview_elements`); ручной `mcp__ozma__transaction` — только фолбэк для крошечных списков. Список: `https://ozma.gogol.school/views/marketing/list_form?id=<id>`
 - Память: `reference_lead_segmentation`, `reference_email_engagement`, `reference_ozma_bonus_balance`, `feedback_ozma_refunds`, `feedback_notion_workspace_routing`
 - Потребитель списков: `/new-campaign` (заводит кампанию на готовых `marketing.lists`)
