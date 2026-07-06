@@ -1,0 +1,62 @@
+name: validate
+
+# Репозиторий раздаётся через `curl … install.sh | bash` с ветки main —
+# любая ошибка в main тут же прилетает всем. Этот workflow ловит базовые
+# поломки до мержа: секреты в гите, битый JSON/симлинки/скиллы, синтаксис.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Секреты в файлах (gitleaks)
+        # --no-git: сканируем текущее дерево файлов, а не всю историю
+        # (историю уже не поправить без rewrite; цель — не пропустить новый секрет).
+        run: |
+          VER=8.18.4
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          ./gitleaks detect --no-git --source . --redact --no-banner --exit-code 1 --verbose
+
+      - name: MCP-конфиги — валидный JSON
+        run: |
+          fail=0
+          for f in roles/*/.mcp.json; do
+            python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" \
+              && echo "ok  $f" || { echo "BAD $f"; fail=1; }
+          done
+          exit $fail
+
+      - name: Симлинки скиллов не битые
+        run: |
+          fail=0
+          for l in .claude/skills/*; do
+            [ -e "$l" ] || { echo "BROKEN symlink: $l -> $(readlink "$l")"; fail=1; }
+          done
+          exit $fail
+
+      - name: У каждого SKILL.md есть фронтматтер (name + description)
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            head -1 "$f" | grep -q '^---$' \
+              && grep -q '^name:' "$f" \
+              && grep -q '^description:' "$f" \
+              || { echo "нет фронтматтера name/description: $f"; fail=1; }
+          done < <(find roles -name SKILL.md)
+          exit $fail
+
+      - name: Синтаксис install.sh
+        run: bash -n install.sh
+
+      - name: Синтаксис Python-скриптов
+        run: |
+          for f in $(find scripts -name '*.py' 2>/dev/null); do
+            python3 -m py_compile "$f" && echo "ok  $f"
+          done

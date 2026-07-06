@@ -12,3 +12,11 @@
 
 # Локальные выгрузки и аналитика (содержат ПДн студентов — телефоны/email; в гит не попадают)
 analytics/
+
+# Рабочие планы/черновики в корне (личные заметки, не часть платформы; docs/ остаётся под гитом)
+/refund_agent_plan.md
+/daily_reconciliation_plan.md
+/alumni_channel_add_queue.md
+
+# Локальный кэш мастер-промптов из Notion (генерится scripts/cache-master-prompts.py, у каждой машины свой)
+**/references/master-prompt.cache.md
