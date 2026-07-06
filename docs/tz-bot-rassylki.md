@@ -165,7 +165,7 @@ Data source: `collection://34a612c7-62af-80b6-85e6-000bdf26af93`. Рабочий
 
 «Статистика с разных мест» = **Unisender API** (отправлено/открытия/клики) + **Яндекс.Метрика** (поведение по UTM на сайте) + **Ozma** (`email_statuses_for_actions`; заказы для Payment). Метрики прилетают ~**48 часов** после отправки.
 
-> **Связки построены 23.06.2026** (MCP на `ozma.gogol.school`): Unisender-stats — `list_campaigns` / `get_campaign_stats` (отдаёт готовые `reach`/`open_rate_pct`/`click_rate_pct`); Яндекс.Метрика-UTM — `get_utm_report` / `get_custom_report` (визиты/цели по UTM, счётчик `58973071`). Маппинг «поле → источник» и нюансы (дробление списков >1000, несколько UTM) — в Notion [📊 Как вносить статистику в Активности](https://app.notion.com/p/388612c762af81619bcec028061e6b64). Осталось только правило Payment-атрибуции.
+> **Связки построены 23.06.2026** (MCP на `ozma.gogol.school`): Unisender-stats — `list_campaigns` / `get_campaign_stats` (отдаёт готовые `reach`/`open_rate_pct`/`click_rate_pct`); Яндекс.Метрика-UTM — `get_utm_report` / `get_custom_report` (визиты/цели по UTM, счётчик `58973071`). Маппинг «поле → источник» и нюансы (дробление списков >1000, несколько UTM) — в [instrukciya-statistika-aktivnosti.md](instrukciya-statistika-aktivnosti.md) и Notion [📊 Как вносить статистику в Активности](https://app.notion.com/p/388612c762af81619bcec028061e6b64). Осталось только правило Payment-атрибуции.
 
 Точная опись «какое поле карточки заполняется на каждом шаге и откуда берётся» — в Notion: [Что вносится в карточку «🎯 Активности» и откуда — по полям](https://app.notion.com/p/367612c762af81a88dd6c13bb5545da1) (Белла смотрит видео-разбор до 24.06). Бот следует этой описи; там же — правило атрибуции Payment.
 
@@ -205,7 +205,7 @@ Data source: `collection://34a612c7-62af-80b6-85e6-000bdf26af93`. Рабочий
 - Платформа: [tz-agent-platform.md](tz-agent-platform.md)
 - Проект: [🧬 Внедрение ИИ для рассылок](https://app.notion.com/p/35f612c762af80bc949fdd12a3f37aa9)
 - Notion-таблица: [🎯 Активности](https://app.notion.com/p/34a612c762af800eb759c68232d547e6) (`34a612c7…`) — источник и приёмник. Прежняя 💌 Рассылки (`0f648878…`) больше не используется.
-- Инструкция по статистике (Notion): [📊 Как вносить статистику в Активности](https://app.notion.com/p/388612c762af81619bcec028061e6b64)
+- Инструкция по статистике: [instrukciya-statistika-aktivnosti.md](instrukciya-statistika-aktivnosti.md) · Notion [📊 Как вносить статистику в Активности](https://app.notion.com/p/388612c762af81619bcec028061e6b64)
 - Промты: [кампания](https://app.notion.com/p/367612c762af8134bc68e3042613a9a7) · [UTM](https://app.notion.com/p/367612c762af81e384a6cd7c86154dc9) · [каталог сегментов](https://app.notion.com/p/34a612c762af81098b83fee7c5f7bde7) · [типы шаблонов](https://app.notion.com/p/365612c762af809ab78ac99900af1d6b) · [опись полей карточки](https://app.notion.com/p/367612c762af81a88dd6c13bb5545da1)
 - Роль: `roles/marketing-assistant/CLAUDE.md`
 - Память: `reference_email_engagement`, `reference_lead_segmentation`, `reference_ozma_bonus_balance`, `feedback_notion_workspace_routing`
