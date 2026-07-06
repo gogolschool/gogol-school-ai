@@ -9,3 +9,6 @@
 **/.mcp.local.json
 .claude/settings.local.json
 **/settings.local.json
+
+# Локальные выгрузки и аналитика (содержат ПДн студентов — телефоны/email; в гит не попадают)
+analytics/
