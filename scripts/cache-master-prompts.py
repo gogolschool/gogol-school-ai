@@ -17,7 +17,10 @@
 простоем Notion / после правки промптов.
 
 Использование:
-    NOTION_TOKEN=ntn_xxx python3 scripts/cache-master-prompts.py [--dry-run]
+    NOTION_TOKEN=ntn_xxx python3 scripts/cache-master-prompts.py [--dry-run] [--roles r1,r2]
+
+    --roles marketing-assistant  — кэшировать только скиллы этой роли
+      (напр. сервер с ботом Гермионой использует только маркетинговые скиллы).
 
 На РФ-сервере, где Notion доступен только через прокси, задать прокси в env:
     HTTPS_PROXY=http://127.0.0.1:1087 NOTION_TOKEN=... python3 scripts/cache-master-prompts.py
@@ -36,8 +39,25 @@ NOTION_VERSION = "2022-06-28"
 API = "https://api.notion.com/v1"
 DRY_RUN = "--dry-run" in sys.argv
 
+# --roles r1,r2 — кэшировать только указанные роли (по умолчанию — все).
+# Полезно на машине под конкретного агента: напр. серверу с ботом Гермионой
+# нужны только маркетинговые скиллы (--roles marketing-assistant).
+ONLY_ROLES = None
+for _a in sys.argv[1:]:
+    if _a.startswith("--roles="):
+        ONLY_ROLES = {r.strip() for r in _a.split("=", 1)[1].split(",") if r.strip()}
+    elif _a == "--roles":
+        i = sys.argv.index(_a)
+        if i + 1 < len(sys.argv):
+            ONLY_ROLES = {r.strip() for r in sys.argv[i + 1].split(",") if r.strip()}
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILLS_GLOB_ROOT = os.path.join(REPO, "roles")
+
+# Корень prompt-library — это НЕ конкретный промпт, а вся библиотека.
+# Скиллы вроде /newcontract ссылаются на него с пометкой «искать внутри».
+# Кэшировать его целиком бессмысленно (рекурсивно тянется вся библиотека) — пропускаем.
+PROMPT_LIBRARY_ROOT = "6f0c0859-c8ab-46e2-8381-07aeb3b4726c"
 
 # id страницы = 32 hex-символа (с дефисами или без)
 ID_RE = re.compile(r"([0-9a-fA-F]{32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})")
@@ -131,6 +151,8 @@ def find_master_ids(skill_md_path):
                 continue
             for m in ID_RE.findall(line):
                 canon = _dash(m)
+                if canon == PROMPT_LIBRARY_ROOT:
+                    continue  # корень библиотеки, не конкретный промпт — пропускаем
                 if canon not in seen:
                     seen.add(canon)
                     ids.append(canon)
@@ -145,6 +167,8 @@ def main():
 
     total, ok, empty, failed = 0, 0, 0, 0
     for role in sorted(os.listdir(SKILLS_GLOB_ROOT)):
+        if ONLY_ROLES is not None and role not in ONLY_ROLES:
+            continue
         skills_dir = os.path.join(SKILLS_GLOB_ROOT, role, "skills")
         if not os.path.isdir(skills_dir):
             continue
