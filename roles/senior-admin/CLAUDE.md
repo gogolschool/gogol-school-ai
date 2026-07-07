@@ -136,7 +136,7 @@
 ### Внешние сервисы
 
 - [Касса (Google Sheets)](https://docs.google.com/spreadsheets/d/1rsVHzXDDtZ7tjBdC8YIF_HMWSsImA4TD)
-- [Суммы возвратов (Яндекс.Диск)](https://disk.yandex.ru/d/USVln1xMcmz44g)
+- [Суммы возвратов (Google Sheets, актуальная с 07.2026)](https://docs.google.com/spreadsheets/d/1eRtJVz9xugFTxKuOuoSVet4Xmvxjx25u0gQd16geE_s/edit?gid=0#gid=0) — старая на Я.Диске устарела
 - [Яндекс.Диск администраторов](https://disk.yandex.ru/client/disk/администраторы)
 - [Sambot](https://sambot.ru/bots)
 - [СРМ Ozma](https://gogolschool.ozma.org/views/user/main)
