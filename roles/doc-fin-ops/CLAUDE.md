@@ -21,6 +21,7 @@
 ## Что делаю чаще всего
 
 - Внесение банковской выписки → skill [`/bank`](skills/bank/SKILL.md)
+- Разбор помеченных записей экономики (доп.комментарий) и решения по P&L → skill [`/check-economics`](skills/check-economics/SKILL.md) (агент «Егор Крид»; закрывает флаги, которые ставит `/bank`)
 - Заведение нового договора → skill [`/newcontract`](skills/newcontract/SKILL.md)
 - Проверка справки об оплате обучения (налоговый вычет) → skill [`/tax-cert`](skills/tax-cert/SKILL.md)
 - Создание/корректировка транзакции в `fin.transactions`
