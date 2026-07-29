@@ -45,7 +45,8 @@ Confirm-first на запись · не угадывать проект/стат
 ## Строит Бэлла (вне этого коммита)
 
 - ✅ TG-группа «GS Экономика» создана: peer `-1003955423634`, топик `1`. Осталось: бот + privacy mode off.
-- Деплой бота на ozma по каркасу Ланы: `/home/agentbot/bots/egor/bot.py`, systemd `egor-bot`, user `agentbot`, `.env` (токен бота, `CLAUDE_CODE_OAUTH_TOKEN`, токены MCP), `PERSONA` (Егор), allowlist (ozma economics/pl + telegram send), оркестратор скан+сводка 10:00 МСК, активация по «егор»/«егорка»/тег. Скиллы — через `git pull` клона `/home/agentbot/gogol-school-ai`.
+- Деплой бота на ozma по каркасу Ланы: `/home/agentbot/bots/egor/bot.py`, systemd `egor-bot`, user `agentbot`, `.env` (токен бота, `CLAUDE_CODE_OAUTH_TOKEN`, токены MCP), `PERSONA` (Егор), allowlist (ozma economics/pl + telegram send), оркестратор скан+сводка 10:00 МСК, активация по «егор»/«егорка»/тег.
+- ⚠️ **Скиллы — через СВОЙ клон репо: `/home/agentbot/gogol-school-ai-egor`, а не общий `/home/agentbot/gogol-school-ai`.** `cwd` прогона задаёт «проект» Claude Code, а значит каталог сессий и штатной авто-памяти. На общем клоне боты делят и то и другое: правила одного подмешиваются другому, а записи «запомни» уезжают туда, откуда бот их не читает (набито на Гермионе и Лане 29.07.2026, см. `bots/README.md`). Новый клон добавить в `bots/pull-skills.sh` и в `bots/refresh-prompt-cache.sh` (с `--roles doc-fin-ops`), а `TRANSCRIPT_DIR` в bot.py выводить из `REPO`, не хардкодить. Так же скопировать `guard-write.sh` + `.claude/settings.local.json` (запись только в свой `notes.md`).
 - Модель: для финансовой классификации рекомендуется Opus (`--model` в `cmd`).
 
 ## Вне скоупа (фазы дальше)
