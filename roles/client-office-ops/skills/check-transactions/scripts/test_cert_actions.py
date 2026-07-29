@@ -172,8 +172,8 @@ class TestDedupAndFraud(unittest.TestCase):
     def test_high_confidence_merge_on_phone(self):
         from reconcile import build_dedup_and_fraud
         people = {10: {"first_name": "Олег"}, 26: {"first_name": "Олег"}}
-        comm = {10: [{"type": "Телефон", "data": "+7 926 247-41-66"}],
-                26: [{"type": "Телефон", "data": "89262474166"}]}
+        comm = {10: [{"type": "Телефон", "data": "+7 926 000-00-00"}],
+                26: [{"type": "Телефон", "data": "89260000000"}]}
         m, pd, fr = build_dedup_and_fraud([self._usage(10, 26)], people, comm)
         self.assertEqual(len(m), 1)
         self.assertIn("phone", m[0]["match_signals"])

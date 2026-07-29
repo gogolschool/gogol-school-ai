@@ -14,9 +14,9 @@ from reconcile import (
 
 class TestNormalization(unittest.TestCase):
     def test_phone_formats_collapse_to_last10(self):
-        for v in ("+79262474166", "79262474166", "89262474166",
-                  "8 (926) 247-41-66", "7-926-247-41-66"):
-            self.assertEqual(_norm_phone(v), "9262474166")
+        for v in ("+79260000000", "79260000000", "89260000000",
+                  "8 (926) 000-00-00", "7-926-000-00-00"):
+            self.assertEqual(_norm_phone(v), "9260000000")
 
     def test_phone_empty(self):
         self.assertIsNone(_norm_phone(""))
