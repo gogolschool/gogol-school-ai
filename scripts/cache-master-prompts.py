@@ -81,6 +81,11 @@ def notion_api(method, path):
         return json.load(r)
 
 
+# id таблиц, у которых первая строка — заголовок: чтобы дописать |---|---| после неё.
+# Заполняется в render_block при встрече блока table, вычитывается на первой table_row.
+_TABLE_HEADER = {}
+
+
 def rich_text(rt):
     return "".join(x.get("plain_text", "") for x in (rt or []))
 
@@ -95,9 +100,11 @@ def render_blocks(block_id, depth=0):
             path += "&start_cursor=" + cursor
         data = notion_api("GET", path)
         for b in data.get("results", []):
-            out.append(render_block(b, depth))
+            out.append(render_block(b, depth, block_id))
             if b.get("has_children") and b["type"] not in ("column_list", "column"):
-                out.append(render_blocks(b["id"], depth + 1))
+                # Строки таблицы не вкладываем глубже — иначе markdown-таблица
+                # разъедется отступами и перестанет читаться как таблица.
+                out.append(render_blocks(b["id"], depth if b["type"] == "table" else depth + 1))
         if not data.get("has_more"):
             break
         cursor = data.get("next_cursor")
@@ -105,7 +112,7 @@ def render_blocks(block_id, depth=0):
     return "\n".join(x for x in out if x is not None)
 
 
-def render_block(b, depth):
+def render_block(b, depth, parent_id=None):
     t = b.get("type", "")
     d = b.get(t, {})
     pad = "  " * depth
@@ -134,6 +141,18 @@ def render_block(b, depth):
         return "```%s\n%s\n```" % (lang, txt)
     if t == "divider":
         return "---"
+    if t == "table":
+        # Сам блок пустой, содержимое — в дочерних table_row (рендерятся отдельно).
+        # Разделитель заголовка дописываем в table_row по флагу has_column_header.
+        _TABLE_HEADER[b["id"]] = d.get("has_column_header", False)
+        return ""
+    if t == "table_row":
+        cells = [rich_text(c).replace("|", "\\|").replace("\n", " ") or " "
+                 for c in d.get("cells", [])]
+        row = "| " + " | ".join(cells) + " |"
+        if _TABLE_HEADER.pop(parent_id, False):  # первая строка — заголовок
+            row += "\n|" + "---|" * len(cells)
+        return row
     if t == "child_page":
         return pad + "📄 " + d.get("title", "")
     if txt:
