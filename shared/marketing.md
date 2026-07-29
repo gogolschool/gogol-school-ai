@@ -79,7 +79,7 @@
 ### Контакты
 
 - **Открытые программы**: `info@gogol.school` · +7 (495) 180-46-80 · `gogolschool.ru`
-- **B2B**: `katya.gusakova@gogol.school` · +7 916 722 5092 · `b2b.gogolschool.ru`
+- **B2B**: `business@gogol.school` · +7 (923) 554-36-67 · `b2b.gogolschool.ru`
 
 ### Подпись
 
