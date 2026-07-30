@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Reconcile all sources for one day. Reads /tmp/reconcile_<date>/ JSONs, emits markdown.
 
-Usage: reconcile.py /tmp/reconcile_<date>/
+Usage: reconcile.py /tmp/reconcile_<date>/ [--brief]
+
+--brief печатает только шапку, зависшие оплаты, платежи в процессе и «Что делать» —
+формат для перепроверки предыдущего дня (шаг 6 SKILL.md).
 """
+import datetime as dt
 import json
 import re
 import sys
@@ -41,6 +45,109 @@ COUNTERPARTY_MARKERS = {
     "mixplat":       [("name", "Миксплат"), ("name", "MixPlat")],
     "yandex_split":  [("name", "Яндекс")],
 }
+
+
+# --- Состояние дня и времени провайдера ------------------------------------
+#
+# Сверка живёт в МСК: день <date> заканчивается в 21:00 UTC. Пока день не
+# закрыт, картина неполная — рассрочки подтверждаются вечером (у CP
+# CreatedDate 15:26, AuthDate 19:25, ConfirmDate 19:39, payout уже следующим
+# днём), поэтому сверка «на середине дня» показывает их как незавершённые.
+
+UTC = dt.timezone.utc
+MSK = dt.timezone(dt.timedelta(hours=3))
+
+# Ключи меты источников → эквайринговые account_id уровня 1.
+# `tinkoff` — банковская выписка, она участвует только в уровне 2.
+SOURCE_TO_ACCOUNTS = {
+    "cp":                {26728, 27017, 27018},
+    "tinkoff_acquiring": {6, 1570},
+    "mixplat":           {26729},
+    "split":             {23719},
+    "tinkoff":           set(),
+}
+
+# Насколько свежее подтверждение у провайдера считаем гонкой с вебхуком, а не
+# потерей: вебхук долетает за секунды, час — заведомо щедрый запас.
+FRESH_CONFIRM_WINDOW = dt.timedelta(minutes=60)
+
+
+def _parse_dt(value, assume=UTC) -> Optional[dt.datetime]:
+    """ISO 8601 (в т.ч. с `Z`) → aware datetime. Наивные значения — в `assume`."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=assume)
+    return parsed.astimezone(UTC)
+
+
+def _parse_dotnet_date(value) -> Optional[dt.datetime]:
+    """CloudPayments `/Date(1785343192765)/` → aware UTC. Epoch — единственное
+    однозначное поле: `*Iso`-поля CP отдаёт в МСК, а не в UTC."""
+    if not isinstance(value, str):
+        return None
+    m = re.search(r"/Date\((-?\d+)\)/", value)
+    if not m:
+        return None
+    return dt.datetime.fromtimestamp(int(m.group(1)) / 1000, UTC)
+
+
+def day_closed_at_utc(date: str) -> Optional[dt.datetime]:
+    """Момент закрытия МСК-дня `date` в UTC (00:00 МСК следующих суток)."""
+    try:
+        d = dt.date.fromisoformat(date)
+    except (TypeError, ValueError):
+        return None
+    return dt.datetime.combine(d + dt.timedelta(days=1), dt.time(0), MSK).astimezone(UTC)
+
+
+def is_day_closed(date: str, fetched_at_utc) -> Optional[bool]:
+    """True/False, либо None если время выгрузки или дата непонятны."""
+    closes = day_closed_at_utc(date)
+    fetched = _parse_dt(fetched_at_utc)
+    if closes is None or fetched is None:
+        return None
+    return fetched >= closes
+
+
+def provider_confirmed_at(tx: dict) -> Optional[dt.datetime]:
+    """Когда провайдер подтвердил платёж (UTC), насколько это видно из данных.
+
+    Порядок: epoch-поля CP (`ConfirmDate`, затем `AuthDate`) → нормализованный
+    `datetime_utc`. У CP `datetime_utc` приходит без смещения и фактически в
+    МСК, у Mixplat — со смещением; поэтому наивное значение читаем как МСК.
+    """
+    raw = tx.get("raw") or {}
+    for key in ("ConfirmDate", "AuthDate"):
+        stamp = _parse_dotnet_date(raw.get(key))
+        if stamp:
+            return stamp
+    return _parse_dt(tx.get("datetime_utc"), assume=MSK)
+
+
+def unavailable_accounts(meta: dict) -> set:
+    """Каналы уровня 1, которые не выгрузились: по ним сравнивать нечего."""
+    out = set()
+    for name, state in (meta.get("sources") or {}).items():
+        if not (state or {}).get("ok"):
+            out |= SOURCE_TO_ACCOUNTS.get(name, set())
+    return out
+
+
+def unavailable_channels(meta: dict) -> List[Tuple[str, str, set]]:
+    """[(имя источника, причина, его account_id)] для неудачных выгрузок."""
+    out = []
+    for name, state in sorted((meta.get("sources") or {}).items()):
+        state = state or {}
+        if state.get("ok") or not SOURCE_TO_ACCOUNTS.get(name):
+            continue
+        reason = state.get("detail") or state.get("error") or "источник недоступен"
+        out.append((name, reason, SOURCE_TO_ACCOUNTS[name]))
+    return out
 
 
 # --- Level 3: contact comparison (read-only) -------------------------------
@@ -499,7 +606,8 @@ _STATUS_TO_ROLE = {"succeeded": "capture", "refunded": "refund"}
 _ROLE_TO_STATUS = {v: k for k, v in _STATUS_TO_ROLE.items()}
 
 
-def match_level_1(ozma_txs: List[dict], provider_txs: List[dict]) -> Dict:
+def match_level_1(ozma_txs: List[dict], provider_txs: List[dict],
+                  fetched_at_utc=None) -> Dict:
     """Match provider rows to Ozma rows per acquiring account.
 
     Rules:
@@ -509,9 +617,16 @@ def match_level_1(ozma_txs: List[dict], provider_txs: List[dict]) -> Dict:
          - provider has a succeeded/refunded tx that found no other Ozma row for
            that id → `stuck_pending`: the money IS at the provider and never
            landed in the books (lost webhook). This is the loudest finding.
-         - provider has nothing / only failed / only pending → abandoned attempt,
-           listed in `pending_ignored` (informational, keeps the report quiet).
+         - provider still has the payment in flight (`pending` — CP Authorized,
+           рассрочка в охлаждении) → `provider_pending`: ждём подтверждения, не
+           расхождение.
+         - provider has nothing / only failed → abandoned attempt, listed in
+           `pending_ignored` (informational, keeps the report quiet).
        Pending rows never show up as `only_in_ozma`.
+    1a. `fetched_at_utc` (когда снимали данные) позволяет отличить потерянный
+       вебхук от гонки с ним: если провайдер подтвердил платёж меньше чем
+       FRESH_CONFIRM_WINDOW назад, запись помечается `fresh=True` и в отчёте
+       идёт 🟡, а не 🔴.
     2. A refund creates a second Ozma row with the SAME `tks_order_id` but
        direction reversed (account_from = acquiring account). `tks_state` may
        still be CONFIRMED/AUTHORIZED on both rows — the role is determined by
@@ -520,12 +635,18 @@ def match_level_1(ozma_txs: List[dict], provider_txs: List[dict]) -> Dict:
        matches Ozma role=refund. Mismatch (provider succeeded but only refund
        row exists in Ozma, or vice-versa) → `status_drift`.
     """
-    # Step 1: bucket provider rows by (acc, id, status).
+    fetched = _parse_dt(fetched_at_utc)
+
+    # Step 1: bucket provider rows by (acc, id, status); in-flight rows aside.
     prov_by_acc: Dict[int, Dict[Tuple[str, str], List[dict]]] = defaultdict(lambda: defaultdict(list))
+    inflight_by_acc: Dict[int, Dict[str, List[dict]]] = defaultdict(lambda: defaultdict(list))
     for tx in provider_txs:
         acc = tx.get("expected_ozma_account_id")
         mp = str(tx.get("merchant_payment_id") or "")
         if not mp:
+            continue
+        if tx.get("status") == "pending":
+            inflight_by_acc[acc][mp].append(tx)
             continue
         prov_by_acc[acc][(mp, tx.get("status"))].append(tx)
 
@@ -551,6 +672,7 @@ def match_level_1(ozma_txs: List[dict], provider_txs: List[dict]) -> Dict:
         prov_buckets = prov_by_acc.get(acc, {})
         ozma_buckets = ozma_by_acc.get(acc, {})
         pending_rows = pending_by_acc.get(acc, {})
+        inflight = inflight_by_acc.get(acc, {})
 
         match: list = []
         status_drift: list = []
@@ -602,6 +724,9 @@ def match_level_1(ozma_txs: List[dict], provider_txs: List[dict]) -> Dict:
                 elif oid in pending_rows:
                     if oid not in stuck_ids:
                         o = pending_rows[oid][0]
+                        confirmed = provider_confirmed_at(ps[0])
+                        fresh = bool(fetched and confirmed
+                                     and fetched - confirmed <= FRESH_CONFIRM_WINDOW)
                         stuck_pending.append({
                             "key": oid,
                             "p_status": pstatus,
@@ -611,6 +736,8 @@ def match_level_1(ozma_txs: List[dict], provider_txs: List[dict]) -> Dict:
                             "tks_state": o.get("tks_state"),
                             "site": ps[0].get("site"),
                             "customer_name": o.get("tks_customer_name"),
+                            "confirmed_at": confirmed.isoformat() if confirmed else None,
+                            "fresh": fresh,
                         })
                         stuck_ids.add(oid)
                 else:
@@ -649,7 +776,15 @@ def match_level_1(ozma_txs: List[dict], provider_txs: List[dict]) -> Dict:
             "only_in_provider": only_in_provider,
             "only_in_ozma": only_in_ozma,
             "stuck_pending": stuck_pending,
-            "pending_ignored": sorted(oid for oid in pending_rows if oid not in stuck_ids),
+            "provider_pending": [
+                {"key": oid,
+                 "amount": txs[0].get("amount_kopecks"),
+                 "site": txs[0].get("site"),
+                 "ozma_pending": oid in pending_rows}
+                for oid, txs in sorted(inflight.items())
+            ],
+            "pending_ignored": sorted(oid for oid in pending_rows
+                                      if oid not in stuck_ids and oid not in inflight),
         }
     return results
 
@@ -699,7 +834,7 @@ def match_level_2(provider_sums: Dict[Tuple[int, str], int],
 
 def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
                     level1: Dict, level2: Dict, contacts: Dict, meta: dict,
-                    cert: Optional[dict] = None) -> str:
+                    cert: Optional[dict] = None, brief: bool = False) -> str:
     lines = []
     fetched = meta.get("finished_at_utc", "")
     lines.append(f"# Сверка платежей за {date}")
@@ -712,6 +847,12 @@ def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
     lines.append(f"Источники: {'  '.join(src_states)}")
     if not meta.get("sources", {}).get("ozma", {}).get("ok", True):
         lines.append("⚠️ Озма недоступна — матчинг с заказами невозможен.")
+    day_closed = is_day_closed(date, meta.get("finished_at_utc"))
+    if day_closed is False:
+        lines.append("⚠️ День не закрыт на момент выгрузки: подтверждения по рассрочке "
+                     "приходят вечером (у CP разрыв между созданием и подтверждением — "
+                     "часы), а payout уходит на следующий день. Зависшие оплаты ниже — "
+                     "предварительные, сверить заново после 00:00 МСК.")
 
     # Σ summary
     lines.append("")
@@ -751,16 +892,42 @@ def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
                 o_amount = d.get("o_amount") or 0
                 diff = "" if p_amount == o_amount else f" (в Озме {o_amount/100:.0f}₽)"
                 who = f", {d['customer_name']}" if d.get("customer_name") else ""
-                lines.append(f"- \U0001f534 `{d['key']}` {p_amount/100:.0f}₽{diff} — {r['label']}, "
+                mark = "\U0001f7e1" if d.get("fresh") else "\U0001f534"
+                tail = (" — подтверждено только что, вебхук мог не успеть"
+                        if d.get("fresh") else "")
+                lines.append(f"- {mark} `{d['key']}` {p_amount/100:.0f}₽{diff} — {r['label']}, "
                              f"provider={d.get('p_status')}, строка Озмы {d.get('ozma_tx_id')} "
-                             f"«{d.get('tks_state')}»{who}")
+                             f"«{d.get('tks_state')}»{who}{tail}")
+
+    # Payments the provider has not confirmed yet — рассрочка в охлаждении, холд.
+    lines.append("")
+    lines.append("## ⏳ У провайдера в процессе (ждут подтверждения)")
+    lines.append("")
+    inflight_all = [(acc, d) for acc in sorted(level1) for d in level1[acc]["provider_pending"]]
+    if not inflight_all:
+        lines.append("_Незавершённых платежей у провайдеров нет._")
+    else:
+        lines.append(f"{len(inflight_all)} платёж(ей) ещё не подтверждены — это не расхождение, "
+                     f"вернуться к ним при перепроверке дня.")
+        for acc, d in inflight_all:
+            state = "в Озме «Ожидается оплата»" if d.get("ozma_pending") else "в Озме строки нет"
+            site = f", {d['site']}" if d.get("site") else ""
+            lines.append(f"- ⏳ `{d['key']}` {(d.get('amount') or 0)/100:.0f}₽ — "
+                         f"{level1[acc]['label']}{site}, {state}")
+
+    if brief:
+        lines.extend(_render_advisory(level1, contacts, cert, meta, date, day_closed))
+        return "\n".join(lines)
 
     # Discrepancies
     lines.append("")
     lines.append("## Расхождения уровня 1 (заказ ↔ платёж)")
     lines.append("")
     any_l1 = False
+    skipped = unavailable_accounts(meta)
     for acc, r in level1.items():
+        if acc in skipped:
+            continue  # источник не выгружен — сравнивать не с чем, ниже отдельный блок
         if not (r["status_drift"] or r["amount_drift"] or r["only_in_ozma"]
                 or r["only_in_provider"] or r["stuck_pending"]):
             continue
@@ -785,7 +952,17 @@ def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
                          f"{(d.get('p_amount') or 0)/100:.0f}₽ — см. секцию выше")
     if not any_l1:
         lines.append("_Все транзакции matched._")
-    pending_all = sorted({oid for r in level1.values() for oid in r["pending_ignored"]})
+    unavailable = unavailable_channels(meta)
+    if unavailable:
+        lines.append("")
+    for name, reason, accs in unavailable:
+        # все строки Озмы по каналу остались без пары: и закрытые, и pending
+        n_rows = sum(level1[a]["ozma_count"] + len(level1[a]["pending_ignored"])
+                     for a in accs if a in level1)
+        lines.append(f"- ⚠️ `{name}` не выгружен ({reason}): {n_rows} стр. Озмы по каналу "
+                     f"не сверялись — это не расхождение, а пробел в данных.")
+    pending_all = sorted({oid for acc, r in level1.items() for oid in r["pending_ignored"]
+                          if acc not in skipped})
     if pending_all:
         lines.append("")
         lines.append(f"ℹ️ Брошенные попытки, pending без денег у провайдера ({len(pending_all)}): "
@@ -836,18 +1013,41 @@ def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
     if cert is not None:
         lines.extend(render_cert_section(cert))
 
-    # Advisory
-    lines.append("")
-    lines.append("## Что делать")
+    lines.extend(_render_advisory(level1, contacts, cert, meta, date, day_closed))
+
+    return "\n".join(lines)
+
+
+def _render_advisory(level1: Dict, contacts: Dict, cert: Optional[dict],
+                     meta: dict, date: str, day_closed: Optional[bool]) -> List[str]:
+    lines = ["", "## Что делать"]
     advisory = []
-    stuck_all = [d for acc in sorted(level1) for d in level1[acc]["stuck_pending"]]
-    if stuck_all:
-        detail = ", ".join(f"{d['key']} ({(d.get('p_amount') or 0)/100:.0f}₽)" for d in stuck_all)
-        advisory.append(f"- 🚨 Зависшие оплаты ({len(stuck_all)}): деньги у провайдера, "
+    skipped = unavailable_accounts(meta)
+    live = {acc: r for acc, r in level1.items() if acc not in skipped}
+    stuck_all = [d for acc in sorted(live) for d in live[acc]["stuck_pending"]]
+    stale = [d for d in stuck_all if not d.get("fresh")]
+    fresh = [d for d in stuck_all if d.get("fresh")]
+    if stale:
+        detail = ", ".join(f"{d['key']} ({(d.get('p_amount') or 0)/100:.0f}₽)" for d in stale)
+        advisory.append(f"- 🚨 Зависшие оплаты ({len(stale)}): деньги у провайдера, "
                         f"в Озме «Ожидается оплата» — реплей вебхука или провести руками. {detail}")
-    n_status_drift = sum(len(r["status_drift"]) for r in level1.values())
-    n_only_provider = sum(len(r["only_in_provider"]) for r in level1.values())
-    n_only_ozma = sum(len(r["only_in_ozma"]) for r in level1.values())
+    if fresh:
+        detail = ", ".join(f"{d['key']} ({(d.get('p_amount') or 0)/100:.0f}₽)" for d in fresh)
+        advisory.append(f"- 🟡 Подтверждены только что ({len(fresh)}): вебхук мог не успеть — "
+                        f"перепроверить через час, до этого руками не проводить. {detail}")
+    inflight_all = [d for acc in sorted(live) for d in live[acc]["provider_pending"]]
+    if inflight_all:
+        advisory.append(f"- ⏳ Ждут подтверждения у провайдера ({len(inflight_all)}): рассрочка в "
+                        f"охлаждении или холд. Перепроверить день после 00:00 МСК.")
+    if day_closed is False:
+        advisory.append(f"- ⚠️ День {date} не закрыт: сверка предварительная, прогнать заново "
+                        f"после 00:00 МСК (вечерние подтверждения по рассрочке ещё не пришли).")
+    for name, reason, _ in unavailable_channels(meta):
+        advisory.append(f"- ⚠️ Канал `{name}` не выгружен ({reason}): по нему сверки не было, "
+                        f"починить доступ и прогнать день заново.")
+    n_status_drift = sum(len(r["status_drift"]) for r in live.values())
+    n_only_provider = sum(len(r["only_in_provider"]) for r in live.values())
+    n_only_ozma = sum(len(r["only_in_ozma"]) for r in live.values())
     if n_status_drift:
         advisory.append(f"- Status drift в Озме ({n_status_drift} строк): запустить mixplat_backfill_apply.py — закроется автоматически.")
     if n_only_provider:
@@ -873,21 +1073,25 @@ def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
     if not advisory:
         advisory.append("- Расхождений нет. ✅")
     lines.extend(advisory)
-
-    return "\n".join(lines)
+    return lines
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: reconcile.py /tmp/reconcile_<date>/", file=sys.stderr)
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    brief = "--brief" in sys.argv[1:]
+    if len(args) != 1:
+        print("Usage: reconcile.py /tmp/reconcile_<date>/ [--brief]", file=sys.stderr)
         sys.exit(2)
-    dir_ = Path(sys.argv[1]).resolve()
+    dir_ = Path(args[0]).resolve()
     if not dir_.is_dir():
         print(f"ERROR: {dir_} not a directory", file=sys.stderr)
         sys.exit(2)
     ozma = load_json(dir_ / "ozma.json") if (dir_ / "ozma.json").exists() else {"transactions": []}
     provider_txs = collect_provider_txs(dir_)
-    level1 = match_level_1(ozma.get("transactions", []), provider_txs)
+    meta_path = dir_ / "meta.json"
+    meta = load_json(meta_path) if meta_path.exists() else {}
+    level1 = match_level_1(ozma.get("transactions", []), provider_txs,
+                           fetched_at_utc=meta.get("finished_at_utc"))
 
     statement_ops = []
     spath = dir_ / "tinkoff.json"
@@ -925,11 +1129,9 @@ def main():
     (dir_ / "cert_actions.json").write_text(
         json.dumps(cert, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    meta_path = dir_ / "meta.json"
-    meta = load_json(meta_path) if meta_path.exists() else {}
     md = render_markdown(ozma.get("date", "?"), ozma, provider_txs, level1, level2,
-                         contacts, meta, cert)
-    (dir_ / "report.md").write_text(md, encoding="utf-8")
+                         contacts, meta, cert, brief=brief)
+    (dir_ / ("report_brief.md" if brief else "report.md")).write_text(md, encoding="utf-8")
     print(md)
 
 

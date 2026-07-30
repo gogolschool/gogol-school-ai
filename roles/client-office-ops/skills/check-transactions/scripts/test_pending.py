@@ -95,11 +95,14 @@ class TestAbandonedAttempts(unittest.TestCase):
         self.assertEqual(res["only_in_ozma"], [])
         self.assertEqual(res["pending_ignored"], ["41822"])
 
-    def test_provider_still_pending(self):
+    def test_provider_still_pending_is_in_flight_not_abandoned(self):
+        # см. test_day_state.TestProviderInFlight: рассрочка в охлаждении ждёт
+        # подтверждения, это не брошенная попытка
         res = match_level_1([ozma_row("41822", "Ожидается оплата", 89000, id=39200)],
                             [prov_tx("41822", "pending", 89000)])[CP_CARDS]
         self.assertEqual(res["stuck_pending"], [])
-        self.assertEqual(res["pending_ignored"], ["41822"])
+        self.assertEqual(res["pending_ignored"], [])
+        self.assertEqual(len(res["provider_pending"]), 1)
 
 
 class TestRetryAfterPendingAttempt(unittest.TestCase):
