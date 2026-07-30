@@ -52,6 +52,15 @@
 }
 ```
 
+**`datetime_utc` — настоящий UTC с 30.07.2026.** До этого эндпоинт кладал туда
+`raw.CreatedDateIso`, а CP отдаёт `*Iso`-поля в МСК (запрос уходит с
+`TimeZone: MSK`), то есть значение уезжало на +3 часа. Теперь берётся epoch
+`raw.CreatedDate` (`/Date(ms)/`, единственное однозначное поле), фолбэк —
+`CreatedDateIso` с трактовкой как МСК. В дампах, собранных до фикса, у CP в
+`datetime_utc` лежит МСК без смещения — `reconcile.py` это учитывает
+(`provider_confirmed_at`: наивное значение читается как МСК, у Mixplat смещение
+явное). Внутри `raw` времена CP по-прежнему как есть: epoch — UTC, `*Iso` — МСК.
+
 ## `GET /reconcile/tinkoff-acquiring`
 
 **Query params:**
