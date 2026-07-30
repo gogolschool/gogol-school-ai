@@ -485,10 +485,10 @@ def _ozma_row_role(row: dict) -> Optional[Tuple[int, str]]:
     "refund" when on account_from (money out — refund/chargeback to client).
     Returns None if the row doesn't touch any tracked acquiring account.
     """
-    acc_to = row.get("account_to")
+    acc_to = _ref_id(row.get("account_to"))
     if acc_to in ACCOUNT_IDS:
         return acc_to, "capture"
-    acc_from = row.get("account_from")
+    acc_from = _ref_id(row.get("account_from"))
     if acc_from in ACCOUNT_IDS:
         return acc_from, "refund"
     return None
@@ -503,10 +503,15 @@ def match_level_1(ozma_txs: List[dict], provider_txs: List[dict]) -> Dict:
     """Match provider rows to Ozma rows per acquiring account.
 
     Rules:
-    1. If an order's `tks_order_id` has at least one pending Ozma row
-       (tks_state ∈ "Ожидается оплата"/...), the WHOLE order is blacklisted —
-       it never appears as only_in_provider or only_in_ozma. The user said:
-       "не потерял, просто игнорируй" — incomplete order, both sides skip.
+    1. Pending Ozma rows (tks_state ∈ "Ожидается оплата"/...) cannot be matched
+       by role, so they are held aside — but NOT blacklisted. For each pending
+       order we look at what the provider says:
+         - provider has a succeeded/refunded tx that found no other Ozma row for
+           that id → `stuck_pending`: the money IS at the provider and never
+           landed in the books (lost webhook). This is the loudest finding.
+         - provider has nothing / only failed / only pending → abandoned attempt,
+           listed in `pending_ignored` (informational, keeps the report quiet).
+       Pending rows never show up as `only_in_ozma`.
     2. A refund creates a second Ozma row with the SAME `tks_order_id` but
        direction reversed (account_from = acquiring account). `tks_state` may
        still be CONFIRMED/AUTHORIZED on both rows — the role is determined by
@@ -515,57 +520,52 @@ def match_level_1(ozma_txs: List[dict], provider_txs: List[dict]) -> Dict:
        matches Ozma role=refund. Mismatch (provider succeeded but only refund
        row exists in Ozma, or vice-versa) → `status_drift`.
     """
-    # Step 1: collect pending tks_order_ids — these are blacklisted everywhere.
-    pending_ids: set = set()
-    for row in ozma_txs:
-        oid = str(row.get("tks_order_id") or "")
-        if not oid:
-            continue
-        if normalize_ozma_state(row.get("tks_state")) == "pending":
-            pending_ids.add(oid)
-
-    # Step 2: bucket provider rows by (acc, id, status).
+    # Step 1: bucket provider rows by (acc, id, status).
     prov_by_acc: Dict[int, Dict[Tuple[str, str], List[dict]]] = defaultdict(lambda: defaultdict(list))
-    prov_ids_by_acc: Dict[int, set] = defaultdict(set)
     for tx in provider_txs:
         acc = tx.get("expected_ozma_account_id")
         mp = str(tx.get("merchant_payment_id") or "")
-        if not mp or mp in pending_ids:
+        if not mp:
             continue
         prov_by_acc[acc][(mp, tx.get("status"))].append(tx)
-        prov_ids_by_acc[acc].add(mp)
 
-    # Step 3: bucket Ozma rows by (acc, id, role). Skip pending and blacklisted.
+    # Step 2: bucket Ozma rows by (acc, id, role); pending rows go aside per id.
     ozma_by_acc: Dict[int, Dict[Tuple[str, str], List[dict]]] = defaultdict(lambda: defaultdict(list))
-    ozma_ids_by_acc: Dict[int, set] = defaultdict(set)
+    pending_by_acc: Dict[int, Dict[str, List[dict]]] = defaultdict(lambda: defaultdict(list))
     for row in ozma_txs:
         oid = str(row.get("tks_order_id") or "")
-        if not oid or oid in pending_ids:
-            continue
-        if normalize_ozma_state(row.get("tks_state")) == "pending":
+        if not oid:
             continue
         role_info = _ozma_row_role(row)
         if not role_info:
             continue
         acc, role = role_info
+        if normalize_ozma_state(row.get("tks_state")) == "pending":
+            pending_by_acc[acc][oid].append(row)
+            continue
         ozma_by_acc[acc][(oid, role)].append(row)
-        ozma_ids_by_acc[acc].add(oid)
 
-    # Step 4: match per account.
+    # Step 3: match per account.
     results = {}
     for acc in sorted(ACCOUNT_IDS):
         prov_buckets = prov_by_acc.get(acc, {})
         ozma_buckets = ozma_by_acc.get(acc, {})
+        pending_rows = pending_by_acc.get(acc, {})
 
         match: list = []
         status_drift: list = []
         amount_drift: list = []
         only_in_ozma: list = []
         only_in_provider: list = []
+        stuck_pending: list = []
+        stuck_ids: set = set()
         reported_drift: set = set()  # ids already reported once
 
-        # 4a: walk every provider (id, status) bucket.
-        for (oid, pstatus), ps in prov_buckets.items():
+        # 3a: walk every provider (id, status) bucket. `succeeded` before
+        # `refunded` per id, so a stuck order is reported by its capture.
+        for (oid, pstatus), ps in sorted(
+                prov_buckets.items(),
+                key=lambda kv: (kv[0][0], 0 if kv[0][1] == "succeeded" else 1, kv[0][1] or "")):
             expected_role = _STATUS_TO_ROLE.get(pstatus)
             if expected_role is None:
                 # provider 'pending'/'failed' — not part of matching; ignore.
@@ -587,9 +587,11 @@ def match_level_1(ozma_txs: List[dict], provider_txs: List[dict]) -> Dict:
                         "amount": p_amount,
                     })
             else:
-                # No Ozma row with the expected role. Two cases:
+                # No Ozma row with the expected role. Three cases:
                 #  a) Ozma has some other role for this id → status_drift
-                #  b) Ozma has nothing for this id → only_in_provider
+                #  b) Ozma has only a pending row for this id → stuck_pending
+                #     (provider took the money, the order never got closed)
+                #  c) Ozma has nothing for this id → only_in_provider
                 ozma_roles_for_id = sorted({r for (oid2, r) in ozma_buckets.keys() if oid2 == oid})
                 if ozma_roles_for_id:
                     if oid not in reported_drift:
@@ -597,6 +599,20 @@ def match_level_1(ozma_txs: List[dict], provider_txs: List[dict]) -> Dict:
                                               "p_status": pstatus,
                                               "o_roles": ",".join(ozma_roles_for_id)})
                         reported_drift.add(oid)
+                elif oid in pending_rows:
+                    if oid not in stuck_ids:
+                        o = pending_rows[oid][0]
+                        stuck_pending.append({
+                            "key": oid,
+                            "p_status": pstatus,
+                            "p_amount": ps[0].get("amount_kopecks"),
+                            "o_amount": amount_kopecks_from_ozma(o),
+                            "ozma_tx_id": _ref_id(o.get("id")),
+                            "tks_state": o.get("tks_state"),
+                            "site": ps[0].get("site"),
+                            "customer_name": o.get("tks_customer_name"),
+                        })
+                        stuck_ids.add(oid)
                 else:
                     only_in_provider.append({"key": oid,
                                               "role": expected_role,
@@ -604,7 +620,7 @@ def match_level_1(ozma_txs: List[dict], provider_txs: List[dict]) -> Dict:
                                               "amount": ps[0].get("amount_kopecks"),
                                               "site": ps[0].get("site")})
 
-        # 4b: walk every Ozma (id, role) bucket — find those that didn't get a provider match.
+        # 3b: walk every Ozma (id, role) bucket — find those that didn't get a provider match.
         for (oid, orole), os_ in ozma_buckets.items():
             expected_pstatus = _ROLE_TO_STATUS.get(orole)
             if expected_pstatus and (oid, expected_pstatus) in prov_buckets:
@@ -632,7 +648,8 @@ def match_level_1(ozma_txs: List[dict], provider_txs: List[dict]) -> Dict:
             "amount_drift": amount_drift,
             "only_in_provider": only_in_provider,
             "only_in_ozma": only_in_ozma,
-            "pending_blacklisted_count": len(pending_ids & prov_ids_by_acc.get(acc, set())),
+            "stuck_pending": stuck_pending,
+            "pending_ignored": sorted(oid for oid in pending_rows if oid not in stuck_ids),
         }
     return results
 
@@ -717,13 +734,35 @@ def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
         lines.append(f"| {label:26s} | {agg['count']:>6} | {agg['amount']/100:>9.0f} ₽ "
                      f"| {agg['payout']/100:>7.0f} ₽ | {l2_mark} |")
 
+    # Money at the provider that never landed in the books — the loudest finding.
+    lines.append("")
+    lines.append("## 🚨 Оплачено у провайдера, в Озме «Ожидается оплата»")
+    lines.append("")
+    n_stuck = sum(len(r["stuck_pending"]) for r in level1.values())
+    if not n_stuck:
+        lines.append("_Зависших оплат нет._")
+    else:
+        lines.append(f"{n_stuck} заказ(ов): деньги у провайдера, в учёт не попали "
+                     f"(скорее всего не долетел вебхук).")
+        for acc in sorted(level1):
+            r = level1[acc]
+            for d in r["stuck_pending"]:
+                p_amount = d.get("p_amount") or 0
+                o_amount = d.get("o_amount") or 0
+                diff = "" if p_amount == o_amount else f" (в Озме {o_amount/100:.0f}₽)"
+                who = f", {d['customer_name']}" if d.get("customer_name") else ""
+                lines.append(f"- \U0001f534 `{d['key']}` {p_amount/100:.0f}₽{diff} — {r['label']}, "
+                             f"provider={d.get('p_status')}, строка Озмы {d.get('ozma_tx_id')} "
+                             f"«{d.get('tks_state')}»{who}")
+
     # Discrepancies
     lines.append("")
     lines.append("## Расхождения уровня 1 (заказ ↔ платёж)")
     lines.append("")
     any_l1 = False
     for acc, r in level1.items():
-        if not (r["status_drift"] or r["amount_drift"] or r["only_in_ozma"] or r["only_in_provider"]):
+        if not (r["status_drift"] or r["amount_drift"] or r["only_in_ozma"]
+                or r["only_in_provider"] or r["stuck_pending"]):
             continue
         any_l1 = True
         lines.append(f"### {r['label']} (account {acc})")
@@ -741,10 +780,16 @@ def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
         for d in r["only_in_ozma"]:
             extra = f" role={d['role']}" if d.get("role") else ""
             lines.append(f"- \U0001f534 only in ozma `{d['key']}`:{extra} {d.get('amount', 0)/100:.0f}₽ tks_state={d.get('tks_state')}")
-        if r.get("pending_blacklisted_count"):
-            lines.append(f"- ℹ️ {r['pending_blacklisted_count']} provider tx(s) blacklisted (matching pending Ozma orders)")
+        for d in r["stuck_pending"]:
+            lines.append(f"- \U0001f6a8 зависший pending `{d['key']}`: "
+                         f"{(d.get('p_amount') or 0)/100:.0f}₽ — см. секцию выше")
     if not any_l1:
         lines.append("_Все транзакции matched._")
+    pending_all = sorted({oid for r in level1.values() for oid in r["pending_ignored"]})
+    if pending_all:
+        lines.append("")
+        lines.append(f"ℹ️ Брошенные попытки, pending без денег у провайдера ({len(pending_all)}): "
+                     + ", ".join(f"`{i}`" for i in pending_all))
 
     lines.append("")
     lines.append("## Расхождения уровня 2 (Σ payout ↔ Tinkoff выписка)")
@@ -795,6 +840,11 @@ def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
     lines.append("")
     lines.append("## Что делать")
     advisory = []
+    stuck_all = [d for acc in sorted(level1) for d in level1[acc]["stuck_pending"]]
+    if stuck_all:
+        detail = ", ".join(f"{d['key']} ({(d.get('p_amount') or 0)/100:.0f}₽)" for d in stuck_all)
+        advisory.append(f"- 🚨 Зависшие оплаты ({len(stuck_all)}): деньги у провайдера, "
+                        f"в Озме «Ожидается оплата» — реплей вебхука или провести руками. {detail}")
     n_status_drift = sum(len(r["status_drift"]) for r in level1.values())
     n_only_provider = sum(len(r["only_in_provider"]) for r in level1.values())
     n_only_ozma = sum(len(r["only_in_ozma"]) for r in level1.values())

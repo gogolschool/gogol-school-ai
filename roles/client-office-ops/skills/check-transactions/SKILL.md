@@ -77,7 +77,11 @@ User says one of:
 
    String comparison works because UTC timestamps in this column follow lexicographic ISO 8601 order. If a row has a broken `tks_date_time` (e.g. `'2021-13-07'`), it will compare correctly as text but won't fall into any reasonable window; if FunQL still fails, narrow the predicate or pre-filter and record the incident in meta.
 
-   **Pending blacklist:** include pending rows in the query — reconcile.py needs to **see** them to blacklist their `tks_order_id` everywhere. If an order has any «Ожидается оплата» row, both sides ignore it entirely (no `only_in_provider`, no `only_in_ozma`).
+   **Pending-строки обязаны быть в выборке** — reconcile.py должен их **видеть**, иначе зависшие оплаты не находятся. Логика (без blacklist'а, он был убран 30.07.2026):
+   - Провайдер по тому же `tks_order_id` отдал `succeeded`/`refunded`, а других строк в Озме нет → 🚨 **зависшая оплата**: деньги у провайдера, в учёт не попали (обычно не долетел вебхук). Отдельная секция отчёта + строка в «Что делать».
+   - У провайдера денег нет (`failed`, `pending` или строки вообще нет) → брошенная попытка: в матчинг не идёт, попадает в info-строку «Брошенные попытки» с перечислением id.
+   - Если у заказа есть и pending-строка, и закрытая (повторная попытка прошла) — матчится закрытая, pending уходит в брошенные.
+   - Pending-строки никогда не показываются как `only_in_ozma`.
 
    **Refund pairs:** a refunded payment lives in Ozma as **two rows** with the same `tks_order_id`. Direction differs:
    - Capture row: `account_to` = acquiring account.
