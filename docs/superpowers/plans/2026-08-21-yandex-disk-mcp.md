@@ -360,6 +360,29 @@ def test_401_gives_reissue_hint(monkeypatch):
 def test_explain_404_mentions_path_missing():
     msg = DiskClient._explain_http(404, "")
     assert "не найден" in msg.lower()
+
+
+def test_percent_encoded_dotdot_is_not_decoded_into_traversal(monkeypatch):
+    """assert_allowed не декодирует %2e%2e; периметр держится на том, что
+    _request кодирует путь повторно. Если это сломать — появится traversal."""
+    import json
+    import urllib.request
+
+    captured_urls = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def read(self):
+            return json.dumps({"_embedded": {"items": []}}).encode("utf-8")
+
+    def fake_urlopen(req, timeout=None):
+        captured_urls.append(req.full_url)
+        return FakeResponse()
 ```
 
 - [ ] **Step 2: Запустить, убедиться что падает**
@@ -484,7 +507,7 @@ class DiskClient:
 cd ~/YandexDiskMCP && .venv/bin/pytest tests/ -q
 ```
 
-Ожидается: `18 passed`.
+Ожидается: `19 passed`.
 
 - [ ] **Step 5: Коммит**
 
@@ -762,7 +785,7 @@ class SearchIndex:
 cd ~/YandexDiskMCP && .venv/bin/pytest tests/ -q
 ```
 
-Ожидается: `36 passed`.
+Ожидается: `37 passed`.
 
 - [ ] **Step 5: Коммит**
 
@@ -1002,7 +1025,7 @@ def extract_text(filename: str, blob: bytes) -> str:
 cd ~/YandexDiskMCP && .venv/bin/pytest tests/ -q
 ```
 
-Ожидается: `44 passed`.
+Ожидается: `45 passed`.
 
 - [ ] **Step 6: Коммит**
 
@@ -1025,7 +1048,9 @@ git commit -m "Ссылки и чтение документов (.docx, .pdf)
 
 **Interfaces:**
 - Consumes: `paths.assert_allowed`, `DiskClient._request`
-- Produces: `DiskClient.upload_file(local_path: str, disk_path: str) -> dict` — `{"path", "link", "size"}`
+- Produces: `DiskClient.upload_file(local_path: str, disk_path: str) -> dict` — `{"path", "size"}`.
+  Ссылку здесь НЕ возвращаем: клиент не должен знать про построение веб-ссылок.
+  Понадобится ссылка на залитый файл — есть отдельный тул `get_link`.
 
 - [ ] **Step 1: Написать падающий тест**
 
@@ -1132,7 +1157,7 @@ cd ~/YandexDiskMCP && .venv/bin/pytest tests/test_upload.py -q
 cd ~/YandexDiskMCP && .venv/bin/pytest tests/ -q
 ```
 
-Ожидается: `48 passed`.
+Ожидается: `49 passed`.
 
 - [ ] **Step 5: Коммит**
 
@@ -1395,7 +1420,7 @@ if __name__ == "__main__":
 cd ~/YandexDiskMCP && .venv/bin/pytest tests/ -q
 ```
 
-Ожидается: `52 passed`.
+Ожидается: `63 passed`.
 
 - [ ] **Step 5: Проверить, что сервер стартует по stdio**
 
