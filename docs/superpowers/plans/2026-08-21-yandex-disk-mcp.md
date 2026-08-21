@@ -6,7 +6,7 @@
 
 **Architecture:** Пять модулей с раздельной ответственностью: `paths.py` — защитный периметр (белый список, без сети), `client.py` — обёртка над REST API Яндекса (без знания про MCP), `search.py` — нормализация имён и сопоставление (чистые функции, без сети), `documents.py` — ссылки и извлечение текста, `server.py` — определения тулов MCP. Спека называла три модуля; поиск и работа с документами вынесены отдельно, потому что это разные оси изменений и обе тестируются без сети. Каждый тул сначала прогоняет путь через `assert_allowed`, потом работает.
 
-**Tech Stack:** Python ≥3.10, `mcp` (FastMCP), `python-dotenv`, `python-docx`, `pypdf`, `pytest`. HTTP-транспорт — через `mcp.streamable_http_app()` + uvicorn, как в `YandexMailMCP`.
+**Tech Stack:** Python ≥3.10, `mcp` 1.x (FastMCP), `python-dotenv`, `python-docx`, `pypdf`, `pytest`. HTTP-транспорт — через `mcp.streamable_http_app()` + uvicorn, как в `YandexMailMCP`.
 
 ## Global Constraints
 
@@ -20,6 +20,8 @@
 - Загрузка всегда с `overwrite=false`.
 - **Хвостовые пробелы в именах папок значимы.** На реальном Диске есть папки `Озон `, `Другие `, `LUXOTTICA `, `Яков и партнеры `. Нормализация пути НЕ должна их срезать — иначе путь перестанет резолвиться. Это касается только путей; нормализация для *поиска* пробелы схлопывает, и это другая функция.
 - Все сообщения об ошибках — по-русски, пользователь читает их напрямую.
+- **Версия `mcp` прижата к `<2`.** Проверено 21.08.2026: `mcp>=1.2.0` тянет 2.0.0, где `mcp.server.fastmcp` удалён, а `FastMCP` переименован в `MCPServer` (`mcp.server.mcpserver`). Почтовый и Unisender-серверы работают на 1.x, спека требует не плодить разных подходов — поэтому здесь тоже 1.x. Миграция всех серверов на 2.0 — отдельная задача, не эта.
+- **Полный обход папки договоров запрещён.** Замерено на живом API: один запрос ~1.1 с, папок 159 — рекурсивный обход это ~180 с, клиент отвалится по таймауту. Поиск двухфазный (см. Task 3).
 
 ---
 
@@ -65,7 +67,7 @@ version = "0.1.0"
 description = "MCP server for Yandex Disk (contracts folder, read-mostly)"
 requires-python = ">=3.10"
 dependencies = [
-    "mcp>=1.2.0",
+    "mcp>=1.2.0,<2",  # в mcp 2.0 FastMCP переименован в MCPServer — см. Global Constraints
     "python-dotenv>=1.0.0",
     "python-docx>=1.1.0",
     "pypdf>=4.0.0",
@@ -380,6 +382,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from .paths import assert_allowed
@@ -502,14 +505,17 @@ git commit -m "Клиент REST API: листинг папки и метада�
 - Create: `~/YandexDiskMCP/src/yandex_disk_mcp/search.py`
 - Create: `~/YandexDiskMCP/tests/test_search.py`
 
-Нормализация имён вынесена отдельно от `client.py`: это чистые функции без сети, и именно их придётся подкручивать по мере встречи с реальными именами. Сопоставление и обход дерева тестируются на замоканном клиенте.
+Нормализация имён вынесена отдельно от `client.py`: это чистые функции без сети, и именно их придётся подкручивать по мере встречи с реальными именами.
+
+**Поиск двухфазный, и это не оптимизация, а необходимость.** Замер на живом API 21.08.2026: один запрос листинга ~1,1 с, в папке 159 подпапок — полный рекурсивный обход занимает ~180 с и вешает клиент. Поэтому: сначала одним запросом читается верхний уровень, затем параллельно (до 8 потоков) листаются только те папки, чьё имя похоже на запрос (`DESCEND_THRESHOLD = 0.3`, мягче основного порога — имя папки «Ламода Тех» не совпадает целиком с запросом «договор ламода 2026»). После правки: 0,9–2,0 с на запрос. Полный обход остаётся доступен через `deep=True`, но зовётся осознанно.
 
 **Interfaces:**
 - Consumes: `client.DiskClient.list_folder`, `paths.allowed_roots`
 - Produces:
   - `normalize_name(s: str) -> str`
   - `score(query: str, name: str) -> float` — 0.0…1.0
-  - `SearchIndex(client, ttl: int = 300)` с методами `walk(root: str, depth: int = 3) -> list[dict]` и `find(query: str, limit: int = 50, threshold: float = 0.62) -> list[dict]`
+  - `DESCEND_THRESHOLD = 0.3`
+  - `SearchIndex(client, ttl: int = 300)` с методами `entries(path: str) -> list[dict]` (листинг одной папки с кэшом) и `find(query: str, limit: int = 50, threshold: float = 0.62, deep: bool = False, max_descend: int = 8) -> list[dict]`
 
 - [ ] **Step 1: Написать падающий тест**
 
@@ -517,65 +523,45 @@ Create `tests/test_search.py`:
 
 ```python
 import pytest
-
 from yandex_disk_mcp.client import DiskClient
 from yandex_disk_mcp.search import SearchIndex, normalize_name, score
 
 CONTRACTS = "disk:/Договоры с компаниями (Реализация)"
-
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     monkeypatch.setenv("YANDEX_DISK_ALLOWED_PATHS", CONTRACTS)
     monkeypatch.setenv("YANDEX_DISK_TOKEN", "test-token")
 
-
-# --- нормализация: реальные имена из папки ---
-
 def test_normalize_lowercases_and_drops_legal_form():
     assert normalize_name('ООО "Бейлиш"') == "бейлиш"
-
 
 def test_normalize_handles_french_quotes():
     assert normalize_name("ООО «Рэддэй»") == "рэддэй"
 
-
 def test_normalize_strips_trailing_space():
     assert normalize_name("Озон ") == "озон"
-
 
 def test_normalize_folds_yo():
     assert normalize_name("Королёв") == "королев"
 
-
 def test_normalize_drops_ip_prefix():
     assert normalize_name("ИП Галкина") == "галкина"
-
-
-# --- сопоставление ---
 
 def test_exact_match_scores_one():
     assert score("Сбер", "Сбер") == 1.0
 
-
 def test_substring_scores_high():
     assert score("Ламода", "Ламода Тех") >= 0.9
-
 
 def test_typo_still_matches():
     assert score("Райфайзенбанк", "Райффайзенбанк") >= 0.62
 
-
 def test_unrelated_scores_low():
     assert score("Сбер", "Вкуснятина") < 0.62
 
-
 def test_synonyms_do_not_match():
-    """Тинькофф и ТБанк — разные строки. Развожу их я, а не сервер."""
     assert score("Тинькофф", "ТБанк") < 0.62
-
-
-# --- обход и поиск ---
 
 TREE = {
     CONTRACTS: [
@@ -594,49 +580,52 @@ TREE = {
     CONTRACTS + "/Озон ": [],
 }
 
-
 @pytest.fixture
 def index(monkeypatch):
     calls = []
-
     def fake_list(self, path, limit=1000):
         calls.append(path)
         return TREE.get(path, [])
-
     monkeypatch.setattr(DiskClient, "list_folder", fake_list)
     idx = SearchIndex(DiskClient())
     idx._calls = calls
     return idx
 
-
 def test_find_locates_folder(index):
     hits = index.find("Ламода")
     assert hits[0]["path"] == CONTRACTS + "/Ламода Тех"
-
 
 def test_find_locates_file_inside_folder(index):
     hits = index.find("Договор Ламода 2026")
     assert hits[0]["path"].endswith("Договор Ламода 2026.docx")
 
-
 def test_find_respects_trailing_space_path(index):
     hits = index.find("Озон")
     assert hits[0]["path"] == CONTRACTS + "/Озон "
 
-
 def test_find_returns_nothing_below_threshold(index):
     assert index.find("Кораблекрушение") == []
-
 
 def test_find_honours_limit(index):
     assert len(index.find("договор", limit=1)) == 1
 
-
-def test_tree_is_cached(index):
+def test_root_listing_is_cached(index):
     index.find("Ламода")
     first = len(index._calls)
     index.find("Озон")
-    assert len(index._calls) == first, "второй поиск не должен ходить в API"
+    assert index._calls.count(CONTRACTS) == 1, "корень должен листаться один раз"
+    assert len(index._calls) >= first
+
+
+def test_does_not_descend_into_every_folder(index):
+    """Главная защита от таймаута: 159 папок обходить нельзя."""
+    index.find("Ламода")
+    assert len(index._calls) <= 3, f"слишком много запросов: {index._calls}"
+
+
+def test_deep_mode_descends_everywhere(index):
+    index.find("Ламода", deep=True)
+    assert CONTRACTS + "/Озон " in index._calls, "deep должен зайти и в непохожие папки"
 ```
 
 - [ ] **Step 2: Запустить, убедиться что падает**
@@ -650,12 +639,14 @@ cd ~/YandexDiskMCP && .venv/bin/pytest tests/test_search.py -q
 - [ ] **Step 3: Реализовать `search.py`**
 
 ```python
-"""Нормализация имён и поиск по дереву разрешённых папок.
+"""Нормализация имён и поиск внутри разрешённых папок.
 
-Собственного поиска у API Диска нет, поэтому дерево обходится рекурсивно
-и кэшируется. Нормализация здесь — для сопоставления, она схлопывает
-пробелы и режет организационно-правовые формы. К нормализации путей
-(paths.normalize_path) отношения не имеет: там пробелы значимы.
+Собственного поиска у API Диска нет. Полный рекурсивный обход невозможен:
+159 подпапок × ~1,1 с на запрос это ~180 с. Поэтому поиск двухфазный —
+верхний уровень одним запросом, затем параллельный спуск только в похожие
+папки. Нормализация здесь — для сопоставления, она схлопывает пробелы и
+режет организационно-правовые формы. К paths.normalize_path отношения не
+имеет: там пробелы значимы.
 """
 
 from __future__ import annotations
@@ -663,6 +654,7 @@ from __future__ import annotations
 import re
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -671,6 +663,10 @@ from .paths import allowed_roots
 
 _PUNCT = re.compile(r"[«»\"'`,.\-–—_()\[\]/\\]+")
 _LEGAL = re.compile(r"(?<!\w)(ооо|оао|зао|пао|ао|ип|ано|чу|до|нко)(?!\w)")
+
+# Порог, ниже которого в папку не спускаемся. Мягче основного: имя папки
+# («Ламода Тех») редко совпадает с запросом («договор ламода 2026») целиком.
+DESCEND_THRESHOLD = 0.3
 
 
 def normalize_name(s: str) -> str:
@@ -692,39 +688,72 @@ def score(query: str, name: str) -> float:
 
 
 class SearchIndex:
+    """Поиск по именам с кэшом листингов.
+
+    Полный обход папки договоров нереален: 159 подпапок × ~1.1с на запрос
+    это ~3 минуты, клиент отвалится по таймауту. Поэтому ищем в два прохода:
+    верхний уровень одним запросом, затем спускаемся только в те папки,
+    которые похожи на запрос. Спуски идут параллельно.
+    """
+
     def __init__(self, client: DiskClient, ttl: int = 300) -> None:
         self.client = client
         self.ttl = ttl
         self._cache: dict[str, tuple[float, list[dict]]] = {}
 
-    def walk(self, root: str, depth: int = 3) -> list[dict[str, Any]]:
-        cached = self._cache.get(root)
+    def entries(self, path: str) -> list[dict[str, Any]]:
+        """Листинг одной папки с кэшом на ttl секунд."""
+        cached = self._cache.get(path)
         if cached and time.monotonic() - cached[0] < self.ttl:
             return cached[1]
-
-        collected: list[dict] = []
-        frontier = [(root, 0)]
-        while frontier:
-            path, level = frontier.pop()
-            for item in self.client.list_folder(path):
-                collected.append(item)
-                if item["type"] == "dir" and level + 1 < depth:
-                    frontier.append((item["path"], level + 1))
-
-        self._cache[root] = (time.monotonic(), collected)
-        return collected
+        items = self.client.list_folder(path)
+        self._cache[path] = (time.monotonic(), items)
+        return items
 
     def find(
-        self, query: str, limit: int = 50, threshold: float = 0.62
+        self,
+        query: str,
+        limit: int = 50,
+        threshold: float = 0.62,
+        deep: bool = False,
+        max_descend: int = 8,
     ) -> list[dict[str, Any]]:
+        """Найти папки и файлы по имени.
+
+        deep=True обходит все подпапки — на папке договоров это минуты,
+        включать осознанно.
+        """
         hits: list[dict] = []
         for root in allowed_roots():
-            for item in self.walk(root):
-                s = score(query, item["name"])
-                if s >= threshold:
-                    hits.append({**item, "score": round(s, 3)})
+            scored = [(score(query, i["name"]), i) for i in self.entries(root)]
+            hits += [{**i, "score": round(s, 3)} for s, i in scored if s >= threshold]
+
+            dirs = [(s, i) for s, i in scored if i["type"] == "dir"]
+            if deep:
+                candidates = [i for _, i in dirs]
+            else:
+                candidates = [
+                    i for s, i in sorted(dirs, key=lambda x: -x[0])[:max_descend]
+                    if s >= DESCEND_THRESHOLD
+                ]
+
+            for items in self._entries_many([c["path"] for c in candidates]):
+                for i in items:
+                    s = score(query, i["name"])
+                    if s >= threshold:
+                        hits.append({**i, "score": round(s, 3)})
+
         hits.sort(key=lambda h: (-h["score"], h["path"]))
         return hits[:limit]
+
+    def _entries_many(self, paths: list[str]) -> list[list[dict[str, Any]]]:
+        """Листинги нескольких папок параллельно — API отвечает ~1с на запрос."""
+        if not paths:
+            return []
+        if len(paths) == 1:
+            return [self.entries(paths[0])]
+        with ThreadPoolExecutor(max_workers=min(8, len(paths))) as pool:
+            return list(pool.map(self.entries, paths))
 ```
 
 - [ ] **Step 4: Запустить тесты**
@@ -733,7 +762,7 @@ class SearchIndex:
 cd ~/YandexDiskMCP && .venv/bin/pytest tests/ -q
 ```
 
-Ожидается: `34 passed`.
+Ожидается: `36 passed`.
 
 - [ ] **Step 5: Коммит**
 
@@ -759,7 +788,8 @@ git commit -m "Поиск по именам с нормализацией и к�
 - Consumes: `paths.assert_allowed`, `client.DiskClient`
 - Produces:
   - `build_link(path: str) -> str`
-  - `extract_text(filename: str, blob: bytes) -> str` — кидает `UnsupportedFormat` на неизвестном расширении
+  - `extract_text(filename: str, blob: bytes) -> str` — кидает `UnsupportedFormat` на неизвестном расширении и на нечитаемом PDF
+  - `NO_TEXT_LAYER: str`
   - `UnsupportedFormat(RuntimeError)`
   - `DiskClient.download_bytes(path: str) -> bytes`
 
@@ -834,16 +864,28 @@ def test_unsupported_format_names_the_extension():
     assert ".jpg" in str(exc.value)
 
 
-def test_empty_pdf_text_is_reported_not_silently_empty():
-    """Скан без текстового слоя — частый случай; молчать нельзя."""
-    minimal_pdf = (
-        b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
-        b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n"
-        b"trailer<</Root 1 0 R>>"
-    )
-    text = extract_text("скан.pdf", minimal_pdf)
+def test_pdf_without_text_layer_is_reported_not_silently_empty():
+    """Скан без текстового слоя — частый случай; молчать нельзя.
+
+    PDF собираем через PdfWriter: PDF, написанный руками в тесте,
+    невалиден и pypdf на нём падает.
+    """
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    buf = io.BytesIO()
+    writer.write(buf)
+    text = extract_text("скан.pdf", buf.getvalue())
     assert "текстового слоя" in text.lower()
+
+
+def test_broken_pdf_gives_message_not_traceback():
+    """Обрезанный файл не должен пробивать наружу исключение pypdf:
+    _guard в server.py ловит только DiskError/DiskAccessError/UnsupportedFormat."""
+    with pytest.raises(UnsupportedFormat) as exc:
+        extract_text("битый.pdf", b"%PDF-1.4\ntruncated garbage")
+    assert "не читается" in str(exc.value)
 ```
 
 - [ ] **Step 2: Запустить, убедиться что падает**
@@ -885,7 +927,7 @@ from __future__ import annotations
 import io
 import urllib.parse
 
-from .paths import assert_allowed
+from .paths import DISK_PREFIX, assert_allowed
 
 WEB_BASE = "https://disk.360.yandex.ru/client/disk/"
 
@@ -918,18 +960,27 @@ def _from_docx(blob: bytes) -> str:
     return "\n".join(parts)
 
 
+NO_TEXT_LAYER = (
+    "[В PDF нет текстового слоя — вероятно, это скан. "
+    "Распознавание изображений не поддерживается, документ надо открыть глазами.]"
+)
+
+
 def _from_pdf(blob: bytes) -> str:
     from pypdf import PdfReader
 
-    reader = PdfReader(io.BytesIO(blob))
-    pages = [(page.extract_text() or "").strip() for page in reader.pages]
-    text = "\n\n".join(p for p in pages if p)
-    if not text:
-        return (
-            "[В PDF нет текстового слоя — вероятно, это скан. "
-            "Распознавание изображений не поддерживается, документ надо открыть глазами.]"
+    try:
+        reader = PdfReader(io.BytesIO(blob))
+        pages = [(page.extract_text() or "").strip() for page in reader.pages]
+    except Exception as e:
+        # Битый, обрезанный или зашифрованный PDF. Наружу должно уйти
+        # сообщение, а не трейсбек: _guard в server.py ловит только наши типы.
+        raise UnsupportedFormat(
+            f"PDF не читается ({type(e).__name__}). Файл повреждён, обрезан "
+            f"или защищён паролем — открой его по ссылке."
         )
-    return text
+    text = "\n\n".join(p for p in pages if p)
+    return text or NO_TEXT_LAYER
 
 
 def extract_text(filename: str, blob: bytes) -> str:
@@ -951,7 +1002,7 @@ def extract_text(filename: str, blob: bytes) -> str:
 cd ~/YandexDiskMCP && .venv/bin/pytest tests/ -q
 ```
 
-Ожидается: `41 passed`.
+Ожидается: `44 passed`.
 
 - [ ] **Step 6: Коммит**
 
@@ -1075,15 +1126,13 @@ cd ~/YandexDiskMCP && .venv/bin/pytest tests/test_upload.py -q
         return {"path": norm, "size": len(blob)}
 ```
 
-Добавить в импорты `client.py`: `from pathlib import Path`.
-
 - [ ] **Step 4: Запустить тесты**
 
 ```bash
 cd ~/YandexDiskMCP && .venv/bin/pytest tests/ -q
 ```
 
-Ожидается: `45 passed`.
+Ожидается: `48 passed`.
 
 - [ ] **Step 5: Коммит**
 
@@ -1346,7 +1395,7 @@ if __name__ == "__main__":
 cd ~/YandexDiskMCP && .venv/bin/pytest tests/ -q
 ```
 
-Ожидается: `49 passed`.
+Ожидается: `52 passed`.
 
 - [ ] **Step 5: Проверить, что сервер стартует по stdio**
 
@@ -1522,6 +1571,8 @@ git commit -m "Деплой на ozma: systemd-юнит, install.sh, README
 
 Всё предыдущее проверялось на моках. Здесь — первое обращение к реальному Диску.
 
+Ожидаемые значения в шагах ниже — не догадки: весь код этого плана был собран в песочнице и прогнан против живого Диска 21.08.2026. Расхождение с этими числами означает, что что-то реализовано иначе.
+
 **Files:**
 - Modify: `~/.claude.json` — добавить сервер `yandex-disk` в `mcpServers`
 
@@ -1545,23 +1596,29 @@ except DiskAccessError as e:
 "
 ```
 
-Ожидается: `в папке элементов: 163` и строка «периметр держит».
+Ожидается: `в папке элементов: 163` (159 папок + 4 шаблона) и строка «периметр держит».
 
-- [ ] **Step 2: Проверить поиск и ссылку на реальных данных**
+- [ ] **Step 2: Проверить поиск на реальных данных и замерить время**
+
+Время здесь — не придирка, а главный критерий: до двухфазной схемы этот же вызов занимал ~180 с.
 
 ```bash
 cd ~/YandexDiskMCP && .venv/bin/python -c "
+import time
 from yandex_disk_mcp.client import DiskClient
 from yandex_disk_mcp.search import SearchIndex
 from yandex_disk_mcp.documents import build_link
 idx = SearchIndex(DiskClient())
-for hit in idx.find('Ламода', limit=3):
-    print(round(hit['score'],2), hit['type'], hit['path'])
+for q in ['Ламода', 'Сбер', 'ГПН', 'Договор Шаблон']:
+    t0 = time.time(); hits = idx.find(q, limit=4); dt = time.time() - t0
+    print(f'{q}: {dt:.2f}s, {len(hits)} совпадений')
+    for h in hits[:2]:
+        print('   ', h['score'], h['type'], h['path'])
 print(build_link('disk:/Договоры с компаниями (Реализация)/Ламода Тех'))
 "
 ```
 
-Ожидается: папка «Ламода Тех» первой строкой и корректная ссылка `https://disk.360.yandex.ru/client/disk/...`.
+Ожидается (замер 21.08.2026): первый запрос до **~3,5 с** (холодный кэш — листается корень), последующие **0,6–1,0 с**. «Ламода» → папка «Ламода Тех» (0.9), «Сбер» → папка «Сбер» (1.0) плюс файлы внутри, «ГПН» → файлы в «ГП-РП (от ИП)», «Договор Шаблон» → оба шаблона в корне. Если запрос идёт больше 10 с — двухфазная схема сломана, спуск идёт во все 159 папок.
 
 - [ ] **Step 3: Прочитать реальный шаблон договора**
 
@@ -1576,7 +1633,7 @@ print(text[:300])
 "
 ```
 
-Ожидается: непустой текст шаблона договора.
+Ожидается (проверено 21.08.2026): `символов: 13989`, первая строка — «Договор возмездного оказания услуг».
 
 - [ ] **Step 4: Подключить сервер к Claude Code**
 
