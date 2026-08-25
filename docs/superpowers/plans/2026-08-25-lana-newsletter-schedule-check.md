@@ -32,7 +32,7 @@
 - Добавляет константы: `NEWSLETTER_THREAD = 988`, `ORCH_NEWSLETTER_HOUR = 10`, `ORCH_NEWSLETTER_PROMPT` (строка).
 - Не меняет сигнатуры существующих функций.
 
-- [ ] **Step 1: Скачать текущий bot.py с сервера в рабочую копию**
+- [x] **Step 1: Скачать текущий bot.py с сервера в рабочую копию**
 
 ```bash
 mkdir -p /private/tmp/claude-501/-Users-bellafatt-gogol-school-ai/4e347011-5d91-4dfa-871a-2cbb9e6e97c2/scratchpad
@@ -41,7 +41,7 @@ scp root@ozma.gogol.school:/home/agentbot/bots/lana/bot.py /private/tmp/claude-5
 
 Проверка: файл существует и весит ~24КБ (756 строк на момент написания плана).
 
-- [ ] **Step 2: Добавить константы топика и часа**
+- [x] **Step 2: Добавить константы топика и часа**
 
 В блоке констант (сразу после строки `ORCH_THREAD = 3  # топик «Сводки» ...`) добавить:
 
@@ -55,7 +55,7 @@ NEWSLETTER_THREAD = 988                            # топик проверки
 ORCH_NEWSLETTER_HOUR = 10              # проверка шаблона рассылки/расписания — 10:00, КАЖДЫЙ день (и выходные)
 ```
 
-- [ ] **Step 3: Добавить промпт job'а**
+- [x] **Step 3: Добавить промпт job'а**
 
 После блока `ORCH_DIGEST_PROMPT = (...)` (перед строкой `# --- Лимиты прогонов claude ---`) добавить:
 
@@ -88,7 +88,7 @@ ORCH_NEWSLETTER_PROMPT = (
 )
 ```
 
-- [ ] **Step 4: Добавить ветку `newsletter` в `orch_fire()`**
+- [x] **Step 4: Добавить ветку `newsletter` в `orch_fire()`**
 
 Найти функцию `orch_fire(job)` и после блока `elif job == "digest": ...` добавить:
 
@@ -101,7 +101,7 @@ ORCH_NEWSLETTER_PROMPT = (
 
 (Без `silent=True` — прогон должен слать результат в чат, как `anketa`/`digest`.)
 
-- [ ] **Step 5: Вызывать job каждый день, включая выходные — правка `scheduler()`**
+- [x] **Step 5: Вызывать job каждый день, включая выходные — правка `scheduler()`**
 
 Текущий код (после `boot`-блока):
 
@@ -140,7 +140,7 @@ ORCH_NEWSLETTER_PROMPT = (
 
 Дальше код (`anketa`/`digest`/`mail` блоки и `time.sleep(30)` в конце цикла) остаётся без изменений.
 
-- [ ] **Step 6: Обновить docstring/комментарий планировщика**
+- [x] **Step 6: Обновить docstring/комментарий планировщика**
 
 Строка `"""Планировщик Ланы: разбор почты каждый час 10:05–18:05, анкеты в 11:00, сводка в 12:00 (МСК, будни)."""` → добавить упоминание новой job:
 
@@ -149,7 +149,7 @@ ORCH_NEWSLETTER_PROMPT = (
     (МСК, будни); проверка шаблона рассылки/расписания в 10:00 (МСК, каждый день, включая выходные)."""
 ```
 
-- [ ] **Step 7: Проверить локальный синтаксис**
+- [x] **Step 7: Проверить локальный синтаксис**
 
 ```bash
 python3 -m py_compile /private/tmp/claude-501/-Users-bellafatt-gogol-school-ai/4e347011-5d91-4dfa-871a-2cbb9e6e97c2/scratchpad/bot.py
@@ -157,7 +157,7 @@ python3 -m py_compile /private/tmp/claude-501/-Users-bellafatt-gogol-school-ai/4
 
 Ожидается: без вывода (успех), файл `bot.py.pyc`/`__pycache__` появляется рядом.
 
-- [ ] **Step 8: Забэкапить прод-файл и залить новую версию на сервер**
+- [x] **Step 8: Забэкапить прод-файл и залить новую версию на сервер**
 
 ```bash
 ssh root@ozma.gogol.school "cp /home/agentbot/bots/lana/bot.py /home/agentbot/bots/lana/bot.py.bak-20260825"
@@ -167,7 +167,7 @@ ssh root@ozma.gogol.school "chown agentbot:agentbot /home/agentbot/bots/lana/bot
 
 Ожидается: `COMPILE_OK` и число `3` (константа + сравнение в scheduler + упоминание в комментарии/промпте — хотя бы 2).
 
-- [ ] **Step 9: Ручной dry-run job'а без перезапуска сервиса**
+- [x] **Step 9: Ручной dry-run job'а без перезапуска сервиса**
 
 Остановить продовый процесс на время теста, прогнать job один раз через `ORCH_RUN_ON_START`, посмотреть, что реально ушло в топик 988:
 
@@ -177,7 +177,7 @@ ssh root@ozma.gogol.school "systemctl stop lana-bot && sleep 2 && cd /home/agent
 
 Ожидается в выводе: строка `orch: проверка шаблона рассылки/расписания`, без трейсбэков. Проверить в Telegram (топик 988), что пришли ожидаемые сообщения — по данным на 25.08.2026 (после исключения B2B) это ровно один блок «НЕ ЗАПОЛНЕН ШАБЛОН РАССЫЛКИ» с единственным пунктом MK03-202608 (id 12270); блока про расписание быть не должно (у MK03-202608 всего 1 занятие). Сравнить с уже отправленным и отредактированным вручную сообщением `989` в топике 988 — набор должен совпадать, если за это время никто не заполнил поля.
 
-- [ ] **Step 10: Перезапустить боевой сервис**
+- [x] **Step 10: Перезапустить боевой сервис**
 
 ```bash
 ssh root@ozma.gogol.school "systemctl start lana-bot && sleep 3 && systemctl is-active lana-bot && journalctl -u lana-bot -n 20 --no-pager -q"
@@ -185,7 +185,7 @@ ssh root@ozma.gogol.school "systemctl start lana-bot && sleep 3 && systemctl is-
 
 Ожидается: `active`, в логе `Lana Refund bot started (hermione v3 base)` без ошибок импорта/синтаксиса.
 
-- [ ] **Step 11: Закоммитить изменение в репозиторий как заметку о деплое**
+- [x] **Step 11: Закоммитить изменение в репозиторий как заметку о деплое**
 
 Изменения живут только на сервере (bot.py не версионируется в `gogol-school-ai` — это не скилл-часть), поэтому в git фиксируем только сам факт и итоговый код в спеке/памяти. Обновить спеку пометкой о реализации:
 
@@ -205,7 +205,7 @@ cd /Users/bellafatt/gogol-school-ai
 id 989/990.
 ```
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add docs/superpowers/specs/2026-08-25-lana-newsletter-schedule-check-design.md
