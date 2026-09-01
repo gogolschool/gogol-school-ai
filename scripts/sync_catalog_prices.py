@@ -6,8 +6,9 @@
 без дат, нулевые цены) — только сообщает, не трогая.
 
 Запуск:
-    python3 sync_catalog_prices.py            # dry-run, ничего не пишет
-    python3 sync_catalog_prices.py --apply    # чинит каталожные цены
+    python3 sync_catalog_prices.py                    # dry-run, ничего не пишет
+    python3 sync_catalog_prices.py --apply            # чинит каталожные цены
+    python3 sync_catalog_prices.py --apply --quiet    # чинит молча, без уведомлений
 
 Переменные окружения: BITRIX_API_URL, BITRIX_API_TOKEN,
                       TG_BOT_TOKEN, TG_CHAT_ID (опционально).
@@ -21,6 +22,7 @@ from datetime import datetime
 API = os.environ["BITRIX_API_URL"]
 TOKEN = os.environ["BITRIX_API_TOKEN"]
 APPLY = "--apply" in sys.argv
+QUIET = "--quiet" in sys.argv   # чинит, но не пишет в Telegram (ночной прогон)
 
 
 def api(path, method="GET", body=None):
@@ -92,6 +94,8 @@ def check(service, now):
 
 
 def notify(lines):
+    if QUIET:
+        return
     token, chat = os.environ.get("TG_BOT_TOKEN"), os.environ.get("TG_CHAT_ID")
     if not (token and chat):
         return
