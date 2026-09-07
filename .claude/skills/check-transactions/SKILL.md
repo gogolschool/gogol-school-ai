@@ -1,0 +1,302 @@
+---
+name: check-transactions
+description: Daily payments reconciliation for Gogol School — fetches transactions from CloudPayments / Tinkoff Acquiring / Tinkoff Statement / Mixplat / Yandex Split for a given day, queries fin.transactions in Ozma, and produces a Markdown discrepancy report. Use when user mentions "сверка платежей", "сверить за день/вчера/дату", "reconcile payments", or asks to compare provider data with Ozma.
+---
+
+# check-transactions
+
+## When to use
+
+User says one of:
+- «сверь за вчера», «сверь 20 мая», «reconcile yesterday», «сверка платежей за дату»
+- «покажи отчёт за вчера» (reads cached report)
+
+## How
+
+1. **Parse target date** from the user's message. Russian relative dates: "вчера" = today−1, "сегодня" = today. ISO: `YYYY-MM-DD`. Russian month names: «20 мая» = `2026-05-20` (year = current). If ambiguous, ASK before fetching.
+
+   **Сверять надо закрытый день.** МСК-день закрывается в 00:00 следующих суток. Пока он открыт, картина неполная: подтверждения по рассрочке приходят вечером (у CP по одной и той же транзакции `CreatedDate` 15:26, `AuthDate` 19:25, `ConfirmDate` 19:39 МСК), а payout уходит следующим днём. Если просят сегодняшний день — сверить можно, но сразу сказать, что это предварительно: скрипт сам поставит ⚠️ в шапку отчёта и в «Что делать».
+
+1b. **Определить, с чего сверять — якорь «+».** Скилл идёт не «за календарный день»,
+   а с последней проверенной транзакции. Якорь стоит в колонке «Комментарий»
+   «Ежедневного отчёта» (вью `fin.transactions_table_all` = `fin.transactions.comment`):
+
+   ```funql
+   SELECT id, transaction_date, tks_order_id, account_to=>name as acc, tks_customer_name
+   FROM "fin"."transactions"
+   WHERE is_deleted = false AND comment = '+'
+   ORDER BY transaction_date DESC LIMIT 1
+   ```
+
+   - Сравнение **строго `comment = '+'`**, не `LIKE '%+%'` — иначе поймаются «ЛАБ + тг»,
+     «промик ок + часть сертификатом» и телефоны.
+   - Якорь найден → сверяем период **от `transaction_date` этой строки (не включая её)
+     по конец последнего закрытого МСК-дня**.
+   - Якоря нет (первый прогон после сброса) → fallback: последняя транзакция с
+     «отправлено» в комментарии (`comment LIKE '%тправлен%'`). Если и её нет —
+     спросить дату у пользователя, не сверять молча за всю историю.
+   - Если период получился больше 3 дней — сказать это в отчёте («Проверено с ДД.ММ
+     по ДД.ММ, N транзакций») и не удивляться объёму: значит, сверку не делали.
+
+   Диапазон может покрывать несколько дней — шаги 3–5 тогда гоняются по каждому
+   МСК-дню отдельно (fetch/reconcile работают посуточно), а отчёт пользователю
+   собирается один, с общей шапкой.
+
+2. **Determine intent:**
+   - "сверь" / "reconcile" / `--force` → always fetch
+   - "покажи отчёт" / "show report" → read cache, mention age in header
+
+3. **Run fetch** (only on fetch intent):
+   ```bash
+   python3 ~/.claude/skills/check-transactions/scripts/fetch_payments.py <YYYY-MM-DD>
+   ```
+   This writes JSON files to `/tmp/reconcile_<date>/`. Stdout is a short summary — read it.
+
+4. **Query Ozma** via OzmaDB MCP `mcp__ozma__funql_query`. The date semantics
+   are **MSK** everywhere — bookkeeper-friendly. `fin.transactions.tks_date_time`
+   is a `text` column storing UTC ISO 8601 (e.g. `'2026-05-21 08:26:34.010513+00:00'`),
+   so we compare strings against the UTC equivalents of the MSK day boundary:
+
+   - MSK 00:00 of `<date>` = UTC `<date−1> 21:00:00`
+   - MSK 00:00 of `<date+1>` = UTC `<date> 21:00:00`
+
+   Compute `<prev_date>` = `<date> − 1 day` and substitute into:
+   ```funql
+   SELECT
+     id, tks_order_id, amount, tks_amount, tks_state, tks_date_time,
+     account_to, account_to=>name as account_to_name, account_to=>type as account_to_type,
+     account_from, account_from=>name as account_from_name, account_from=>type as account_from_type,
+     account_from=>contractor as cert_buyer_id, account_from=>contact as cert_holder_id,
+     payment_type, tks_customer_name, tks_description,
+     customer, tks_email, tks_phone,
+     is_certificate, is_certificate_payment, used_certificate_amount, comment
+   FROM "fin"."transactions"
+   WHERE is_deleted = false
+     AND (
+       (tks_date_time >= '<prev_date> 21:00:00+00:00' AND tks_date_time < '<date> 21:00:00+00:00'
+        AND (account_to IN (6, 1570, 26728, 27017, 27018, 26729, 23719)
+             OR account_from IN (6, 1570, 26728, 27017, 27018, 26729, 23719)))
+       OR
+       ((is_certificate_payment = true OR is_certificate = true)
+        AND transaction_date >= '<prev_date> 21:00:00+00:00'::datetime
+        AND transaction_date <  '<date> 21:00:00+00:00'::datetime)
+     )
+   ```
+   Save returned rows to `/tmp/reconcile_<date>/ozma.json` as `{date, count, fetched_at_utc, transactions: [...]}`.
+   (`customer`, `tks_email`, `tks_phone` feed the level-3 contact comparison. Reference
+   columns — `account_to`, `account_from`, `customer`, `cert_buyer_id`, `cert_holder_id`,
+   `payment_type` — serialize as int or as `{id, pun}` depending on the client; save the rows
+   as they come, reconcile.py normalizes both via `_ref_id()`. **Всякий раз, когда в коде
+   читается reference-поле, оно обязано проходить через `_ref_id()`** — иначе сравнение
+   падает на `{id, pun}` (регрессия 03.09.2026 в `compare_contacts`); это покрыто
+   `test_ref_columns.py`.)
+
+   **Certificate rows use a different date column.** Certificate-usage rows
+   (`is_certificate_payment = true`, `account_from=>type = 'Сертификат'`) have
+   `tks_date_time = NULL` and `tks_order_id = NULL` — they never match the
+   acquiring branch. They are picked up by the second OR branch, date-filtered on
+   `transaction_date` (a `timestamp with time zone`, so cast literals with
+   `::datetime`) over the same MSK-day UTC window. `account_from=>type` /
+   `account_to=>type`, `is_certificate*`, `used_certificate_amount`, `comment`,
+   and `cert_buyer_id`/`cert_holder_id` (the certificate's `contractor`/`contact`)
+   feed the certificate auto-actions (see step 7).
+
+   **Example** for `<date>=2026-05-21`:
+   ```
+   tks_date_time >= '2026-05-20 21:00:00+00:00'
+   tks_date_time <  '2026-05-21 21:00:00+00:00'
+   ```
+   This picks up rows whose UTC timestamp falls inside `[2026-05-20T21:00Z, 2026-05-21T21:00Z)` — exactly the MSK day 21.05.
+
+   String comparison works because UTC timestamps in this column follow lexicographic ISO 8601 order. If a row has a broken `tks_date_time` (e.g. `'2021-13-07'`), it will compare correctly as text but won't fall into any reasonable window; if FunQL still fails, narrow the predicate or pre-filter and record the incident in meta.
+
+   **Pending-строки обязаны быть в выборке** — reconcile.py должен их **видеть**, иначе зависшие оплаты не находятся. Логика (без blacklist'а, он был убран 30.07.2026):
+   - Провайдер по тому же `tks_order_id` отдал `succeeded`/`refunded`, а других строк в Озме нет → 🚨 **зависшая оплата**: деньги у провайдера, в учёт не попали (обычно не долетел вебхук). Отдельная секция отчёта + строка в «Что делать».
+   - У провайдера денег нет (`failed`, `pending` или строки вообще нет) → брошенная попытка: в матчинг не идёт, попадает в info-строку «Брошенные попытки» с перечислением id.
+   - Если у заказа есть и pending-строка, и закрытая (повторная попытка прошла) — матчится закрытая, pending уходит в брошенные.
+   - Pending-строки никогда не показываются как `only_in_ozma`.
+
+   **Refund pairs:** a refunded payment lives in Ozma as **two rows** with the same `tks_order_id`. Direction differs:
+   - Capture row: `account_to` = acquiring account.
+   - Refund row: `account_from` = acquiring account.
+
+   `tks_state` may be `CONFIRMED`/`AUTHORIZED`/`SIGNED` on **both** rows — refund direction is determined by `account_from`/`account_to`, not by state. The reconcile script keys on `(tks_order_id, role)` where role is derived from direction; provider `succeeded` lines up with role=capture and provider `refunded` with role=refund.
+
+   **4b. Contact data for level-3 comparison + certificate dedupe.** Collect the
+   union of: every non-empty `customer` id from the transactions above, **plus**
+   every non-empty `cert_buyer_id` from rows where `is_certificate_payment = true`
+   (the buyer ids feed the certificate dedupe/anti-fraud comparison in step 7).
+   Then run two more `mcp__ozma__funql_query` calls over that widened id set and
+   save both into `/tmp/reconcile_<date>/ozma_contacts.json` as
+   `{people: [...], communication_ways: [...]}`:
+   ```funql
+   SELECT id, first_name, last_name, patronymic, nickname
+   FROM "base"."people" WHERE id IN (<customer_and_buyer_ids>)
+   ```
+   ```funql
+   SELECT contact, type, data
+   FROM "base"."communication_ways"
+   WHERE is_deleted = false AND contact IN (<customer_and_buyer_ids>)
+   ```
+   If there are no `customer` ids, write `{"people": [], "communication_ways": []}`
+   (or skip the file — reconcile.py treats a missing file as no contact data, and
+   every provider contact field then degrades to `missing_in_ozma`).
+
+5. **Run reconcile**:
+   ```bash
+   python3 ~/.claude/skills/check-transactions/scripts/reconcile.py /tmp/reconcile_<date>/
+   ```
+   Stdout is the raw Markdown report (levels 1–3 + certificates). **Do NOT dump it
+   verbatim** — reformat into the operator worklist below.
+
+   Что в отчёте появилось 30.07.2026 и на что смотреть в первую очередь:
+   - `## 🚨 Оплачено у провайдера, в Озме «Ожидается оплата»` — деньги есть, в учёте нет. 🔴 — разбирать, 🟡 — подтверждено меньше часа назад, вебхук мог не успеть (перепроверить позже, руками не проводить).
+   - `## ⏳ У провайдера в процессе` — рассрочка в охлаждении или холд. Не расхождение, вернуться при перепроверке дня.
+   - `- ⚠️ <канал> не выгружен (...)` — по каналу сверки не было. Скрипт больше НЕ выдаёт по таким каналам «only in ozma»: это пробел в данных, а не расхождение.
+   - `ℹ️ Брошенные попытки` — pending без денег у провайдера, шум, но id перечислены.
+
+   ### Формат отчёта для пользователя (обязательный)
+
+   Пиши по-русски, коротко, по пунктам. **Не объясняй, почему провайдер надо
+   проверять руками** (не писать «нет токена», «протухла сессия» — это и так
+   известно). Структура:
+
+   ```
+   ## Сверка платежей за <ДД месяца ГГГГ>
+
+   ### 0) Требует действий сейчас
+   <зависшие оплаты 🔴 из секции «Оплачено у провайдера, в Озме Ожидается оплата»:
+    Заказ | Кто | Сумма | Канал | что сделать (реплей вебхука / провести руками)>
+   <если пусто — «зависших оплат нет»; пункт не выкидывать>
+   <сюда же 🟡-свежие и ⏳-в процессе одной строкой: «N ждут подтверждения, перепроверить после закрытия дня»>
+
+   ### 1) Тинькофф (эквайринг) — перепроверить руками
+   <таблица оплат за день через Тинькофф-эквайринг (account 6): Заказ | Кто | Сумма | Статус>
+   <строки «Ожидается оплата» помечать как вероятную брошенную попытку>
+
+   ### 2) Яндекс.Сплит — перепроверить руками
+   <список оплат по Сплиту; если в Озме их нет — так и написать;
+    ссылка на консоль https://console.pay.yandex.ru/payments>
+
+   ### 3) CloudPayments (эквайринг + рассрочка) и Mixplat — проверено ✅
+   <кратко: кол-во и суммы по каждому каналу; «контакты совпадают» если уровень 3 ок>
+
+   ### 4) Сертификаты
+   <кратко статус: сколько авто-погашений, есть ли анти-фрод-флаги>
+   ```
+
+   Правила наполнения:
+   - **Пункт 0** — всегда первый и всегда есть. Зависшие оплаты 🔴 — единственное,
+     где деньги уже у нас, а в выручке их нет; их нельзя утопить в списках ниже.
+   - **Пункты 1–2** — это worklist «проверить руками». Туда попадают каналы,
+     которые не выгрузились автоматически (Тинькофф-эквайринг, Тинькофф-выписка,
+     Сплит). Перечисляй конкретные оплаты из Озмы, чтобы сотруднику было что искать
+     в кабинете. Если по каналу оплат в Озме нет — напиши «оплат нет», но всё равно
+     оставь пункт (день мог содержать платежи, не попавшие в Озму).
+   - **Пункт 3** — каналы, которые сверились автоматически (CloudPayments, Mixplat):
+     только итог, без «расхождений» уровня 1/2, если они вызваны невыгруженными
+     провайдерами.
+   - **Пункт 4** — итог по блоку `## 🎁 Сертификаты` из reconcile.py.
+   - После отчёта спросить: применить ли авто-комментарии к сертификатам (шаг 7).
+
+   Сырой Markdown reconcile.py не показывай, если пользователь явно не попросил
+   «покажи сырой отчёт».
+
+5b. **Перепроверить предыдущий день** (всегда, без отдельной просьбы). Рассрочки
+   подтверждаются вечером и догружаются в Озму позже, поэтому вчерашняя картина
+   могла измениться. Прогнать для `<date−1>` шаги 3–4 заново (fetch перезапишет
+   `/tmp/reconcile_<date−1>/`) и запустить сокращённый отчёт:
+   ```bash
+   python3 ~/.claude/skills/check-transactions/scripts/reconcile.py /tmp/reconcile_<date-1>/ --brief
+   ```
+   `--brief` печатает только шапку, зависшие оплаты, платежи в процессе и «Что делать»
+   (и пишет `report_brief.md`). В отчёт пользователю добавить строку вида
+   «Перепроверка <ДД.ММ>: зависших N, ждут подтверждения M» — а если появились
+   новые 🔴, вынести их в пункт 0 вместе с сегодняшними.
+
+6. **Follow-up**: user asks for details — use `jq` or `Read` on the JSON files in `/tmp/reconcile_<date>/`.
+
+6b. **Поставить якорь «+»** — в конце каждой успешной сверки, автоматически,
+   без отдельной просьбы. Найти последнюю транзакцию проверенного периода:
+
+   ```funql
+   SELECT id, tks_order_id, tks_customer_name, comment FROM "fin"."transactions"
+   WHERE is_deleted = false
+     AND transaction_date >= '<prev_date> 21:00:00+00:00'::datetime
+     AND transaction_date <  '<date> 21:00:00+00:00'::datetime
+   ORDER BY transaction_date DESC LIMIT 1
+   ```
+
+   и записать в неё якорь через `mcp__ozma__transaction` update `fin.transactions`:
+   - комментарий пуст → `comment = '+'`;
+   - комментарий непустой → `comment = <существующий> + ', +'` (текст оператора не затирать);
+   - в комментарии уже есть якорь (`comment = '+'` или заканчивается на `, +'`) → пропустить.
+
+   Якорь ставится **только на одну строку** — последнюю проверенную. Остальные строки
+   периода не трогаем: «+» здесь — закладка «досюда проверено», а не отметка на каждой
+   транзакции. В отчёте пользователю написать одной строкой, куда встал якорь
+   (заказ + ФИО + дата), чтобы было видно, с чего пойдёт следующая сверка.
+
+7. **Apply certificate actions** (ONLY on explicit user confirmation). `reconcile.py`
+   wrote `/tmp/reconcile_<date>/cert_actions.json` and a `## 🎁 Сертификаты` report
+   section. Show that section and ask: «применить? (N комментариев, M ФИО, K слияний)».
+   On «да», for each item re-check then write via the OzmaDB MCP:
+   - **`comments[]`**: `mcp__ozma__funql_query` the current `comment` of `tx_id`. If it
+     already contains «автоматическое использование сертификата» (case-insensitive)
+     → skip. Otherwise `mcp__ozma__transaction` update `fin.transactions` id=`tx_id`,
+     `comment = existing + ", " + tag` when existing is non-empty, else the tag alone.
+   - **`fio_fixes[]`**: `mcp__ozma__funql_query` `base.people` id=`person_id`. Only if the
+     current name still matches /Кэррот/ → `mcp__ozma__transaction` update `base.people`
+     id=`person_id` with `first_name` / `last_name` from the plan.
+   - **`merges[]`** (confidence=high only; **confirm each one individually** — destructive):
+     `mcp__ozma__run_action` `base/merge_two_contacts` with `{keep_id, dup_id}`
+     (survivor = `keep_id`, the lower id; the other is soft-deleted).
+   - **`possible_duplicates[]`** and **`fraud_flags[]`**: report-only, never auto-written.
+   Report applied / skipped / failed counts.
+
+## What this skill does NOT do
+
+- Пишет в Озму без подтверждения ровно одну вещь — якорь «+» на последнюю
+  проверенную транзакцию (шаг 6b). Это закладка, а не финансовая правка.
+- Writes to Ozma ONLY for confirmed certificate actions (step 7): auto-usage
+  comments, «Кэррот» ФИО fixes, and high-confidence duplicate merges. Everything
+  else (level-1/2/3 discrepancies, anti-fraud flags, possible duplicates) is
+  surfaced read-only and resolved by the user.
+- Does NOT auto-fix non-certificate discrepancies — only surfaces them.
+- Does NOT parse provider responses into context — keep raw JSON in files, use `jq` on demand.
+
+## Level 3 — contact comparison
+
+On orders present on both sides, reconcile.py compares provider contact
+(email/phone/name/telegram; name/phone arrive from CP `JsonData` once the site
+sends them) against the **union** of Ozma sources: transaction snapshot
+(`tks_email`/`tks_phone`/`tks_customer_name`), contact card
+(`base.people` first/last/patronymic) and all `communication_ways` of the
+contact. A value is OK if found in any source; otherwise it's `mismatch` (Ozma
+has a different value) or `missing_in_ozma` (Ozma has none). See the
+`## Расхождения контактов (уровень 3)` report section.
+
+## Files in this skill
+
+- `scripts/fetch_payments.py` — async parallel fetch of all 5 OzmaBot endpoints
+- `scripts/reconcile.py` — matching + markdown (levels 1–3)
+- `scripts/test_contacts.py` — unit tests for level-3 contact comparison
+- `scripts/test_ref_columns.py` — unit tests for int/`{id, pun}` reference columns
+- `scripts/test_pending.py` — unit tests for зависшие/брошенные pending-строки
+- `scripts/test_day_state.py` — unit tests for состояние дня и невыгруженные каналы
+- `references/endpoint-contracts.md` — full endpoint specs
+- `references/reconciliation-rules.md` — matching logic + account_id mapping
+- `references/status-normalization.md` — status maps
+- `.env` — `OZMABOT_URL`, `RECONCILE_API_KEY` (must be created locally, gitignored)
+
+## Setting up the skill
+
+`install.sh` создаёт `.env` автоматически: подтягивает `RECONCILE_API_KEY` из
+Notion (🔐 Токены MCP) и пишет `OZMABOT_URL` + `RECONCILE_API_KEY` в
+`~/.claude/skills/check-transactions/.env`.
+
+Если ставишь скилл вручную (без install.sh) и `.env` нет — скопируй из примера:
+```bash
+cp ~/.claude/skills/check-transactions/.env.example ~/.claude/skills/check-transactions/.env
+# edit .env, set OZMABOT_URL and RECONCILE_API_KEY (same as in OzmaBot/reconcile/reconcile.env)
+```

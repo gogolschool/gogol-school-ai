@@ -1,0 +1,1139 @@
+#!/usr/bin/env python3
+"""Reconcile all sources for one day. Reads /tmp/reconcile_<date>/ JSONs, emits markdown.
+
+Usage: reconcile.py /tmp/reconcile_<date>/ [--brief]
+
+--brief печатает только шапку, зависшие оплаты, платежи в процессе и «Что делать» —
+формат для перепроверки предыдущего дня (шаг 6 SKILL.md).
+"""
+import datetime as dt
+import json
+import re
+import sys
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+
+CHANNEL_TO_ACCOUNT = {
+    ("tinkoff_acquiring", "ooo"):    6,
+    ("tinkoff_acquiring", "ip"):     1570,
+    ("cloudpayments",     "cards"):       26728,
+    ("cloudpayments",     "installment"): 27017,
+    ("cloudpayments",     "dolyame"):     27018,
+    ("mixplat",           None):     26729,
+    ("yandex_split",      None):     23719,
+}
+ACCOUNT_TO_LABEL = {v: f"{k[0]}/{k[1] or '_'}" for k, v in CHANNEL_TO_ACCOUNT.items()}
+ACCOUNT_IDS = set(CHANNEL_TO_ACCOUNT.values())
+
+
+OZMA_STATE_MAP = {
+    "CONFIRMED": "succeeded", "AUTHORIZED": "succeeded", "SIGNED": "succeeded",
+    "COFIRMED": "succeeded",
+    "REFUNDED": "refunded", "PARTIAL_REFUNDED": "refunded",
+    "FAILED": "failed", "REJECTED": "failed",
+    "Ожидается оплата": "pending",
+    "ожидается оплата": "pending",
+    "Требуется оплата": "pending",
+    "требуется оплата": "pending",
+}
+
+
+COUNTERPARTY_MARKERS = {
+    "cloudpayments": [("inn", "7705814643"), ("name", "Клаудпейментс")],
+    "mixplat":       [("name", "Миксплат"), ("name", "MixPlat")],
+    "yandex_split":  [("name", "Яндекс")],
+}
+
+
+# --- Состояние дня и времени провайдера ------------------------------------
+#
+# Сверка живёт в МСК: день <date> заканчивается в 21:00 UTC. Пока день не
+# закрыт, картина неполная — рассрочки подтверждаются вечером (у CP
+# CreatedDate 15:26, AuthDate 19:25, ConfirmDate 19:39, payout уже следующим
+# днём), поэтому сверка «на середине дня» показывает их как незавершённые.
+
+UTC = dt.timezone.utc
+MSK = dt.timezone(dt.timedelta(hours=3))
+
+# Ключи меты источников → эквайринговые account_id уровня 1.
+# `tinkoff` — банковская выписка, она участвует только в уровне 2.
+SOURCE_TO_ACCOUNTS = {
+    "cp":                {26728, 27017, 27018},
+    "tinkoff_acquiring": {6, 1570},
+    "mixplat":           {26729},
+    "split":             {23719},
+    "tinkoff":           set(),
+}
+
+# Насколько свежее подтверждение у провайдера считаем гонкой с вебхуком, а не
+# потерей: вебхук долетает за секунды, час — заведомо щедрый запас.
+FRESH_CONFIRM_WINDOW = dt.timedelta(minutes=60)
+
+
+def _parse_dt(value, assume=UTC) -> Optional[dt.datetime]:
+    """ISO 8601 (в т.ч. с `Z`) → aware datetime. Наивные значения — в `assume`."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=assume)
+    return parsed.astimezone(UTC)
+
+
+def _parse_dotnet_date(value) -> Optional[dt.datetime]:
+    """CloudPayments `/Date(1785343192765)/` → aware UTC. Epoch — единственное
+    однозначное поле: `*Iso`-поля CP отдаёт в МСК, а не в UTC."""
+    if not isinstance(value, str):
+        return None
+    m = re.search(r"/Date\((-?\d+)\)/", value)
+    if not m:
+        return None
+    return dt.datetime.fromtimestamp(int(m.group(1)) / 1000, UTC)
+
+
+def day_closed_at_utc(date: str) -> Optional[dt.datetime]:
+    """Момент закрытия МСК-дня `date` в UTC (00:00 МСК следующих суток)."""
+    try:
+        d = dt.date.fromisoformat(date)
+    except (TypeError, ValueError):
+        return None
+    return dt.datetime.combine(d + dt.timedelta(days=1), dt.time(0), MSK).astimezone(UTC)
+
+
+def is_day_closed(date: str, fetched_at_utc) -> Optional[bool]:
+    """True/False, либо None если время выгрузки или дата непонятны."""
+    closes = day_closed_at_utc(date)
+    fetched = _parse_dt(fetched_at_utc)
+    if closes is None or fetched is None:
+        return None
+    return fetched >= closes
+
+
+def provider_confirmed_at(tx: dict) -> Optional[dt.datetime]:
+    """Когда провайдер подтвердил платёж (UTC), насколько это видно из данных.
+
+    Порядок: epoch-поля CP (`ConfirmDate`, затем `AuthDate`) → нормализованный
+    `datetime_utc`. У CP `datetime_utc` приходит без смещения и фактически в
+    МСК, у Mixplat — со смещением; поэтому наивное значение читаем как МСК.
+    """
+    raw = tx.get("raw") or {}
+    for key in ("ConfirmDate", "AuthDate"):
+        stamp = _parse_dotnet_date(raw.get(key))
+        if stamp:
+            return stamp
+    return _parse_dt(tx.get("datetime_utc"), assume=MSK)
+
+
+def unavailable_accounts(meta: dict) -> set:
+    """Каналы уровня 1, которые не выгрузились: по ним сравнивать нечего."""
+    out = set()
+    for name, state in (meta.get("sources") or {}).items():
+        if not (state or {}).get("ok"):
+            out |= SOURCE_TO_ACCOUNTS.get(name, set())
+    return out
+
+
+def unavailable_channels(meta: dict) -> List[Tuple[str, str, set]]:
+    """[(имя источника, причина, его account_id)] для неудачных выгрузок."""
+    out = []
+    for name, state in sorted((meta.get("sources") or {}).items()):
+        state = state or {}
+        if state.get("ok") or not SOURCE_TO_ACCOUNTS.get(name):
+            continue
+        reason = state.get("detail") or state.get("error") or "источник недоступен"
+        out.append((name, reason, SOURCE_TO_ACCOUNTS[name]))
+    return out
+
+
+# --- Level 3: contact comparison (read-only) -------------------------------
+#
+# Compare provider contact (name/email/phone/telegram) against Ozma for orders
+# present on BOTH sides. Ozma side is the UNION of: transaction snapshot
+# (tks_*), contact card (base.people first/last/patronymic) and ALL of the
+# contact's communication_ways of the matching type. A provider value is OK if
+# it is found in ANY of those; otherwise it's a discrepancy (mismatch when Ozma
+# has some value, missing_in_ozma when Ozma has none).
+
+
+def _ref_id(v):
+    """Reference column may serialize as int or as {"id": .., "pun": ..}."""
+    if isinstance(v, dict):
+        return v.get("id")
+    return v
+
+
+def _norm_phone(s):
+    d = re.sub(r"\D", "", s or "")
+    return d[-10:] if len(d) >= 10 else None
+
+
+def _norm_email(s):
+    if not s:
+        return None
+    s = s.strip().lower()
+    return s or None
+
+
+def _norm_telegram(s):
+    if not s:
+        return None
+    s = s.strip().lstrip("@").lower()
+    return s or None
+
+
+_NAME_SPLIT = re.compile(r"[^\w]+", re.UNICODE)
+
+
+def _name_tokens(s):
+    if not s:
+        return set()
+    return {t for t in _NAME_SPLIT.split(s.lower()) if t}
+
+
+def _parse_jsondata(raw):
+    j = raw.get("JsonData")
+    if isinstance(j, dict):
+        return j
+    if isinstance(j, str):
+        try:
+            v = json.loads(j)
+            return v if isinstance(v, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+    return {}
+
+
+def _ci_get(d, *keys):
+    """Case-insensitive top-level lookup; returns first non-empty value."""
+    low = {k.lower(): v for k, v in d.items()} if isinstance(d, dict) else {}
+    for k in keys:
+        v = low.get(k.lower())
+        if v not in (None, ""):
+            return v
+    return None
+
+
+def provider_contact(tx) -> dict:
+    """Extract {name, email, phone, telegram} from a provider transaction.
+
+    Name/phone/telegram come from CP JsonData (a JSON *string*) going forward;
+    only top-level keys are read so receipt Items.Name is never mistaken for the
+    buyer. Falls back to the normalized `customer` dict and raw Email/Phone.
+    """
+    cust = tx.get("customer") or {}
+    raw = tx.get("raw") or {}
+    jd = _parse_jsondata(raw)
+
+    name = _ci_get(jd, "name")
+    if not name:
+        parts = [p for p in (_ci_get(jd, "firstName"), _ci_get(jd, "lastName")) if p]
+        name = " ".join(parts) if parts else None
+    if not name:
+        name = cust.get("name")
+
+    email = cust.get("email") or raw.get("Email") or _ci_get(jd, "email")
+    phone = cust.get("phone") or raw.get("Phone") or _ci_get(jd, "phone")
+    telegram = _ci_get(jd, "tg", "telegram") or cust.get("telegram")
+
+    return {"name": name or None, "email": email or None,
+            "phone": phone or None, "telegram": telegram or None}
+
+
+def _ozma_contact_values(customer_id, people_by_id, comm_by_contact, snap) -> dict:
+    emails, phones, tgs, name_toks = set(), set(), set(), set()
+
+    e = _norm_email(snap.get("tks_email"))
+    if e:
+        emails.add(e)
+    p = _norm_phone(snap.get("tks_phone"))
+    if p:
+        phones.add(p)
+    name_toks |= _name_tokens(snap.get("tks_customer_name"))
+
+    per = people_by_id.get(customer_id, {}) if customer_id is not None else {}
+    for f in ("first_name", "last_name", "patronymic"):
+        name_toks |= _name_tokens(per.get(f))
+
+    for cw in (comm_by_contact.get(customer_id, []) if customer_id is not None else []):
+        t, data = cw.get("type"), cw.get("data")
+        if t == "Email":
+            v = _norm_email(data)
+            if v:
+                emails.add(v)
+        elif t == "Телефон":
+            v = _norm_phone(data)
+            if v:
+                phones.add(v)
+        elif t == "Telegram":
+            v = _norm_telegram(data)
+            if v:
+                tgs.add(v)
+
+    return {"emails": emails, "phones": phones, "telegrams": tgs,
+            "name_tokens": name_toks}
+
+
+def compare_contacts(comparable, provider_txs, ozma_txs,
+                     people_by_id, comm_by_contact) -> dict:
+    """Return {acc: [discrepancy, ...]} for orders in `comparable` (set of
+    (account_id, tks_order_id)). Each discrepancy:
+    {key, field, category in {mismatch, missing_in_ozma}, provider, ozma}.
+    """
+    snap_by = {}
+    for row in ozma_txs:
+        oid = str(row.get("tks_order_id") or "")
+        if not oid:
+            continue
+        for acc in (_ref_id(row.get("account_to")), _ref_id(row.get("account_from"))):
+            if (acc, oid) in comparable and (acc, oid) not in snap_by:
+                snap_by[(acc, oid)] = row
+
+    results = defaultdict(list)
+    for tx in provider_txs:
+        acc = tx.get("expected_ozma_account_id")
+        oid = str(tx.get("merchant_payment_id") or "")
+        if (acc, oid) not in comparable:
+            continue
+        pc = provider_contact(tx)
+        row = snap_by.get((acc, oid), {})
+        cid = _ref_id(row.get("customer"))
+        ov = _ozma_contact_values(cid, people_by_id, comm_by_contact, row)
+
+        for field, pval, oset, normf in (
+            ("email", pc["email"], ov["emails"], _norm_email),
+            ("phone", pc["phone"], ov["phones"], _norm_phone),
+            ("telegram", pc["telegram"], ov["telegrams"], _norm_telegram),
+        ):
+            if not pval:
+                continue
+            pv = normf(pval)
+            if pv is None:
+                continue
+            if not oset:
+                results[acc].append({"key": oid, "field": field,
+                                     "category": "missing_in_ozma",
+                                     "provider": pval, "ozma": []})
+            elif pv not in oset:
+                results[acc].append({"key": oid, "field": field,
+                                     "category": "mismatch",
+                                     "provider": pval, "ozma": sorted(oset)})
+
+        if pc["name"]:
+            pt = _name_tokens(pc["name"])
+            ot = ov["name_tokens"]
+            if pt:
+                if not ot:
+                    results[acc].append({"key": oid, "field": "name",
+                                         "category": "missing_in_ozma",
+                                         "provider": pc["name"], "ozma": []})
+                elif not pt <= ot:
+                    results[acc].append({"key": oid, "field": "name",
+                                         "category": "mismatch",
+                                         "provider": pc["name"],
+                                         "ozma": sorted(ot)})
+
+    return dict(results)
+
+
+# --- Certificate auto-actions (Notion cases 1-4) --------------------------
+
+CERT_USAGE_TAG = "автоматическое использование сертификата"
+_KARROT_RE = re.compile(r"кэррот", re.IGNORECASE)
+
+
+def _as_bool(v):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("t", "true", "1", "yes")
+    return bool(v)
+
+
+def is_cert_usage(row) -> bool:
+    """A certificate auto-usage row: money drawn from a certificate account."""
+    return _as_bool(row.get("is_certificate_payment")) and \
+        row.get("account_from_type") == "Сертификат"
+
+
+def _comment_has_tag(comment, tag) -> bool:
+    return tag.lower() in (comment or "").lower()
+
+
+def build_comment_actions(ozma_txs) -> list:
+    """Cert-usage rows whose comment lacks the tag → proposed comment writes."""
+    out = []
+    for row in ozma_txs:
+        if not is_cert_usage(row):
+            continue
+        cur = row.get("comment")
+        if _comment_has_tag(cur, CERT_USAGE_TAG):
+            continue
+        out.append({
+            "tx_id": _ref_id(row.get("id")),
+            "account_from_name": row.get("account_from_name"),
+            "current_comment": cur,
+            "proposed_tag": CERT_USAGE_TAG,
+        })
+    return out
+
+
+def provider_name_parts(tx):
+    """(first_name, last_name) from provider JsonData; (None, None) if not cleanly split."""
+    jd = _parse_jsondata(tx.get("raw") or {})
+    first = _ci_get(jd, "firstName")
+    last = _ci_get(jd, "lastName")
+    if first and last:
+        return str(first).strip(), str(last).strip()
+    return None, None
+
+
+def build_fio_fixes(ozma_txs, provider_txs, people_by_id) -> list:
+    """«Кэррот Пользователь» masked contacts → proposed first/last-name fixes.
+
+    The masked name lives on the linked contact card (base.people), surfaced here
+    via people_by_id; the real name comes from the matching provider transaction.
+    """
+    prov_by = {}
+    for tx in provider_txs:
+        mp = str(tx.get("merchant_payment_id") or "")
+        if mp:
+            prov_by[(tx.get("expected_ozma_account_id"), mp)] = tx
+    out = []
+    seen_pids = set()
+    for row in ozma_txs:
+        pid = _ref_id(row.get("customer"))
+        if pid is None or pid in seen_pids:
+            continue
+        per = people_by_id.get(pid) or {}
+        cur_name = " ".join(p for p in (per.get("last_name"), per.get("first_name"),
+                                        per.get("patronymic")) if p)
+        if not _KARROT_RE.search(cur_name):
+            continue
+        role_info = _ozma_row_role(row)
+        acc = role_info[0] if role_info else None
+        tx = prov_by.get((acc, str(row.get("tks_order_id") or "")))
+        if not tx:
+            continue
+        first, last = provider_name_parts(tx)
+        if not (first and last):
+            continue
+        seen_pids.add(pid)
+        out.append({
+            "person_id": pid,
+            "tx_id": _ref_id(row.get("id")),
+            "old_name": cur_name,
+            "new_first_name": first,
+            "new_last_name": last,
+            "source": "provider",
+        })
+    return out
+
+
+def _contact_dedup_keys(pid, people_by_id, comm_by_contact):
+    """(name_tokens, emails, phones) for a contact id, for duplicate detection."""
+    name_toks = set()
+    per = people_by_id.get(pid, {})
+    for f in ("first_name", "last_name", "patronymic"):
+        name_toks |= _name_tokens(per.get(f))
+    emails, phones = set(), set()
+    for cw in comm_by_contact.get(pid, []):
+        t, data = cw.get("type"), cw.get("data")
+        if t == "Email":
+            v = _norm_email(data)
+            if v:
+                emails.add(v)
+        elif t == "Телефон":
+            v = _norm_phone(data)
+            if v:
+                phones.add(v)
+    return name_toks, emails, phones
+
+
+def build_dedup_and_fraud(ozma_txs, people_by_id, comm_by_contact):
+    """For cert-usage rows where payer != certificate buyer:
+      high confidence (shared phone/email) -> merge proposal,
+      name-only match -> possible duplicate,
+      otherwise -> anti-fraud flag.
+    Returns (merges, possible_duplicates, fraud_flags)."""
+    merges, possible_dups, fraud = [], [], []
+    seen_pairs = set()
+    for row in ozma_txs:
+        if not is_cert_usage(row):
+            continue
+        payer = _ref_id(row.get("customer"))
+        buyer = _ref_id(row.get("cert_buyer_id"))
+        if payer is None or buyer is None or payer == buyer:
+            continue
+        pair = (min(payer, buyer), max(payer, buyer))
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        pn, pe, pp = _contact_dedup_keys(payer, people_by_id, comm_by_contact)
+        bn, be, bp = _contact_dedup_keys(buyer, people_by_id, comm_by_contact)
+        signals = []
+        if pe & be:
+            signals.append("email")
+        if pp & bp:
+            signals.append("phone")
+        if signals:
+            merges.append({"keep_id": pair[0], "dup_id": pair[1],
+                           "payer_id": payer, "buyer_id": buyer,
+                           "match_signals": signals, "confidence": "high"})
+        elif pn and bn and (pn <= bn or bn <= pn):
+            possible_dups.append({"payer_id": payer, "buyer_id": buyer,
+                                  "match_signals": ["name"], "confidence": "medium"})
+        else:
+            fraud.append({"tx_id": _ref_id(row.get("id")),
+                          "cert_account": _ref_id(row.get("account_from")),
+                          "payer_id": payer,
+                          "payer_name": " ".join(sorted(pn)) or str(payer),
+                          "buyer_id": buyer,
+                          "buyer_name": " ".join(sorted(bn)) or str(buyer)})
+    return merges, possible_dups, fraud
+
+
+def build_cert_actions(ozma_txs, provider_txs, people_by_id, comm_by_contact) -> dict:
+    """Assemble the full certificate-actions plan."""
+    merges, possible_dups, fraud = build_dedup_and_fraud(
+        ozma_txs, people_by_id, comm_by_contact)
+    return {
+        "comments": build_comment_actions(ozma_txs),
+        "fio_fixes": build_fio_fixes(ozma_txs, provider_txs, people_by_id),
+        "merges": merges,
+        "possible_duplicates": possible_dups,
+        "fraud_flags": fraud,
+    }
+
+
+def render_cert_section(plan: dict) -> list:
+    """Markdown lines for the 🎁 Сертификаты section."""
+    c = plan["comments"]
+    f = plan["fio_fixes"]
+    m = plan["merges"]
+    pd = plan["possible_duplicates"]
+    fr = plan["fraud_flags"]
+    lines = ["", "## 🎁 Сертификаты", ""]
+    if not any((c, f, m, pd, fr)):
+        lines.append("_Сертификатных действий нет._")
+        return lines
+    if c:
+        lines.append(f"### Комментарии к авто-использованию ({len(c)})")
+        for a in c:
+            lines.append(f"- tx {a['tx_id']} ({a['account_from_name']}): + «{a['proposed_tag']}»")
+    if f:
+        lines.append(f"### Правка ФИО «Кэррот» ({len(f)})")
+        for a in f:
+            lines.append(f"- contact {a['person_id']} (tx {a['tx_id']}): "
+                         f"«{a['old_name']}» → {a['new_last_name']} {a['new_first_name']}")
+    if m:
+        lines.append(f"### Слияния дубликатов — high confidence ({len(m)})")
+        for a in m:
+            lines.append(f"- keep {a['keep_id']} ← dup {a['dup_id']} "
+                         f"(signals: {', '.join(a['match_signals'])})")
+    if pd:
+        lines.append(f"### Возможные дубликаты — проверить ({len(pd)})")
+        for a in pd:
+            lines.append(f"- {a['payer_id']} ↔ {a['buyer_id']} (совпало имя)")
+    if fr:
+        lines.append(f"### ⚠️ Анти-фрод — проверить вручную ({len(fr)})")
+        for a in fr:
+            lines.append(f"- tx {a['tx_id']}: плательщик {a['payer_name']} ({a['payer_id']}) "
+                         f"≠ покупатель {a['buyer_name']} ({a['buyer_id']}), "
+                         f"сертификат {a['cert_account']}")
+    return lines
+
+
+def normalize_ozma_state(s):
+    if not s:
+        return "unknown"
+    return OZMA_STATE_MAP.get(s, "unknown")
+
+
+def load_json(path: Path) -> dict:
+    return json.loads(path.read_text())
+
+
+def collect_provider_txs(dir_: Path) -> List[dict]:
+    out = []
+    for name in ("cp", "mixplat", "tinkoff_acquiring", "split"):
+        p = dir_ / f"{name}.json"
+        if not p.exists():
+            continue
+        body = load_json(p)
+        if isinstance(body, dict) and body.get("transactions"):
+            for tx in body["transactions"]:
+                tx["_source_file"] = name
+                out.append(tx)
+    return out
+
+
+def amount_kopecks_from_ozma(row: dict) -> int:
+    a = row.get("amount")
+    if a is not None:
+        return round(float(a) * 100)
+    tks = row.get("tks_amount")
+    if tks:
+        try:
+            return int(tks)
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _ozma_row_role(row: dict) -> Optional[Tuple[int, str]]:
+    """Determine (acquiring_account_id, role) for an Ozma row.
+
+    `role` is "capture" when the acquiring account is on account_to (money in),
+    "refund" when on account_from (money out — refund/chargeback to client).
+    Returns None if the row doesn't touch any tracked acquiring account.
+    """
+    acc_to = _ref_id(row.get("account_to"))
+    if acc_to in ACCOUNT_IDS:
+        return acc_to, "capture"
+    acc_from = _ref_id(row.get("account_from"))
+    if acc_from in ACCOUNT_IDS:
+        return acc_from, "refund"
+    return None
+
+
+# Provider unified status → Ozma row role we expect to find for that provider row.
+_STATUS_TO_ROLE = {"succeeded": "capture", "refunded": "refund"}
+_ROLE_TO_STATUS = {v: k for k, v in _STATUS_TO_ROLE.items()}
+
+
+def match_level_1(ozma_txs: List[dict], provider_txs: List[dict],
+                  fetched_at_utc=None) -> Dict:
+    """Match provider rows to Ozma rows per acquiring account.
+
+    Rules:
+    1. Pending Ozma rows (tks_state ∈ "Ожидается оплата"/...) cannot be matched
+       by role, so they are held aside — but NOT blacklisted. For each pending
+       order we look at what the provider says:
+         - provider has a succeeded/refunded tx that found no other Ozma row for
+           that id → `stuck_pending`: the money IS at the provider and never
+           landed in the books (lost webhook). This is the loudest finding.
+         - provider still has the payment in flight (`pending` — CP Authorized,
+           рассрочка в охлаждении) → `provider_pending`: ждём подтверждения, не
+           расхождение.
+         - provider has nothing / only failed → abandoned attempt, listed in
+           `pending_ignored` (informational, keeps the report quiet).
+       Pending rows never show up as `only_in_ozma`.
+    1a. `fetched_at_utc` (когда снимали данные) позволяет отличить потерянный
+       вебхук от гонки с ним: если провайдер подтвердил платёж меньше чем
+       FRESH_CONFIRM_WINDOW назад, запись помечается `fresh=True` и в отчёте
+       идёт 🟡, а не 🔴.
+    2. A refund creates a second Ozma row with the SAME `tks_order_id` but
+       direction reversed (account_from = acquiring account). `tks_state` may
+       still be CONFIRMED/AUTHORIZED on both rows — the role is determined by
+       direction, NOT by state.
+    3. Provider `succeeded` matches Ozma role=capture; provider `refunded`
+       matches Ozma role=refund. Mismatch (provider succeeded but only refund
+       row exists in Ozma, or vice-versa) → `status_drift`.
+    """
+    fetched = _parse_dt(fetched_at_utc)
+
+    # Step 1: bucket provider rows by (acc, id, status); in-flight rows aside.
+    prov_by_acc: Dict[int, Dict[Tuple[str, str], List[dict]]] = defaultdict(lambda: defaultdict(list))
+    inflight_by_acc: Dict[int, Dict[str, List[dict]]] = defaultdict(lambda: defaultdict(list))
+    for tx in provider_txs:
+        acc = tx.get("expected_ozma_account_id")
+        mp = str(tx.get("merchant_payment_id") or "")
+        if not mp:
+            continue
+        if tx.get("status") == "pending":
+            inflight_by_acc[acc][mp].append(tx)
+            continue
+        prov_by_acc[acc][(mp, tx.get("status"))].append(tx)
+
+    # Step 2: bucket Ozma rows by (acc, id, role); pending rows go aside per id.
+    ozma_by_acc: Dict[int, Dict[Tuple[str, str], List[dict]]] = defaultdict(lambda: defaultdict(list))
+    pending_by_acc: Dict[int, Dict[str, List[dict]]] = defaultdict(lambda: defaultdict(list))
+    for row in ozma_txs:
+        oid = str(row.get("tks_order_id") or "")
+        if not oid:
+            continue
+        role_info = _ozma_row_role(row)
+        if not role_info:
+            continue
+        acc, role = role_info
+        if normalize_ozma_state(row.get("tks_state")) == "pending":
+            pending_by_acc[acc][oid].append(row)
+            continue
+        ozma_by_acc[acc][(oid, role)].append(row)
+
+    # Step 3: match per account.
+    results = {}
+    for acc in sorted(ACCOUNT_IDS):
+        prov_buckets = prov_by_acc.get(acc, {})
+        ozma_buckets = ozma_by_acc.get(acc, {})
+        pending_rows = pending_by_acc.get(acc, {})
+        inflight = inflight_by_acc.get(acc, {})
+
+        match: list = []
+        status_drift: list = []
+        amount_drift: list = []
+        only_in_ozma: list = []
+        only_in_provider: list = []
+        stuck_pending: list = []
+        stuck_ids: set = set()
+        reported_drift: set = set()  # ids already reported once
+
+        # 3a: walk every provider (id, status) bucket. `succeeded` before
+        # `refunded` per id, so a stuck order is reported by its capture.
+        for (oid, pstatus), ps in sorted(
+                prov_buckets.items(),
+                key=lambda kv: (kv[0][0], 0 if kv[0][1] == "succeeded" else 1, kv[0][1] or "")):
+            expected_role = _STATUS_TO_ROLE.get(pstatus)
+            if expected_role is None:
+                # provider 'pending'/'failed' — not part of matching; ignore.
+                continue
+            os_ = ozma_buckets.get((oid, expected_role), [])
+            if os_:
+                p, o = ps[0], os_[0]
+                p_amount = p.get("amount_kopecks", 0)
+                o_amount = amount_kopecks_from_ozma(o)
+                if abs(p_amount - o_amount) > 0:
+                    amount_drift.append({"key": oid, "role": expected_role,
+                                          "p_amount": p_amount, "o_amount": o_amount})
+                else:
+                    match.append({"key": oid, "role": expected_role})
+                if len(ps) > 1 or len(os_) > 1:
+                    only_in_provider.append({
+                        "key": oid, "role": expected_role,
+                        "note": f"duplicate rows: provider={len(ps)} ozma={len(os_)}",
+                        "amount": p_amount,
+                    })
+            else:
+                # No Ozma row with the expected role. Three cases:
+                #  a) Ozma has some other role for this id → status_drift
+                #  b) Ozma has only a pending row for this id → stuck_pending
+                #     (provider took the money, the order never got closed)
+                #  c) Ozma has nothing for this id → only_in_provider
+                ozma_roles_for_id = sorted({r for (oid2, r) in ozma_buckets.keys() if oid2 == oid})
+                if ozma_roles_for_id:
+                    if oid not in reported_drift:
+                        status_drift.append({"key": oid,
+                                              "p_status": pstatus,
+                                              "o_roles": ",".join(ozma_roles_for_id)})
+                        reported_drift.add(oid)
+                elif oid in pending_rows:
+                    if oid not in stuck_ids:
+                        o = pending_rows[oid][0]
+                        confirmed = provider_confirmed_at(ps[0])
+                        fresh = bool(fetched and confirmed
+                                     and fetched - confirmed <= FRESH_CONFIRM_WINDOW)
+                        stuck_pending.append({
+                            "key": oid,
+                            "p_status": pstatus,
+                            "p_amount": ps[0].get("amount_kopecks"),
+                            "o_amount": amount_kopecks_from_ozma(o),
+                            "ozma_tx_id": _ref_id(o.get("id")),
+                            "tks_state": o.get("tks_state"),
+                            "site": ps[0].get("site"),
+                            "customer_name": o.get("tks_customer_name"),
+                            "confirmed_at": confirmed.isoformat() if confirmed else None,
+                            "fresh": fresh,
+                        })
+                        stuck_ids.add(oid)
+                else:
+                    only_in_provider.append({"key": oid,
+                                              "role": expected_role,
+                                              "status": pstatus,
+                                              "amount": ps[0].get("amount_kopecks"),
+                                              "site": ps[0].get("site")})
+
+        # 3b: walk every Ozma (id, role) bucket — find those that didn't get a provider match.
+        for (oid, orole), os_ in ozma_buckets.items():
+            expected_pstatus = _ROLE_TO_STATUS.get(orole)
+            if expected_pstatus and (oid, expected_pstatus) in prov_buckets:
+                continue  # already handled in 4a
+            # If provider has SOME row for this id (different status) — status_drift; otherwise only_in_ozma.
+            prov_statuses_for_id = sorted({s for (oid2, s) in prov_buckets.keys() if oid2 == oid})
+            if prov_statuses_for_id:
+                if oid not in reported_drift:
+                    status_drift.append({"key": oid,
+                                          "o_role": orole,
+                                          "p_statuses": ",".join(prov_statuses_for_id)})
+                    reported_drift.add(oid)
+            else:
+                only_in_ozma.append({"key": oid,
+                                      "role": orole,
+                                      "amount": amount_kopecks_from_ozma(os_[0]),
+                                      "tks_state": os_[0].get("tks_state")})
+
+        results[acc] = {
+            "label": ACCOUNT_TO_LABEL.get(acc, str(acc)),
+            "provider_count": sum(len(v) for v in prov_buckets.values()),
+            "ozma_count": sum(len(v) for v in ozma_buckets.values()),
+            "match": match,
+            "status_drift": status_drift,
+            "amount_drift": amount_drift,
+            "only_in_provider": only_in_provider,
+            "only_in_ozma": only_in_ozma,
+            "stuck_pending": stuck_pending,
+            "provider_pending": [
+                {"key": oid,
+                 "amount": txs[0].get("amount_kopecks"),
+                 "site": txs[0].get("site"),
+                 "ozma_pending": oid in pending_rows}
+                for oid, txs in sorted(inflight.items())
+            ],
+            "pending_ignored": sorted(oid for oid in pending_rows
+                                      if oid not in stuck_ids and oid not in inflight),
+        }
+    return results
+
+
+def sum_payouts_by_date(provider_txs: List[dict]) -> Dict[Tuple[int, str], int]:
+    sums = defaultdict(int)
+    for tx in provider_txs:
+        if tx.get("status") != "succeeded":
+            continue
+        if tx.get("payout_amount_kopecks") is None:
+            continue
+        key = (tx["expected_ozma_account_id"], tx.get("payout_date"))
+        sums[key] += int(tx["payout_amount_kopecks"])
+    return sums
+
+
+def match_level_2(provider_sums: Dict[Tuple[int, str], int],
+                   statement_ops: List[dict]) -> Dict:
+    out = {}
+    for (acc, date), amount in provider_sums.items():
+        provider_kind = next((k for k, v in CHANNEL_TO_ACCOUNT.items() if v == acc), None)
+        provider_name = provider_kind[0] if provider_kind else None
+        markers = COUNTERPARTY_MARKERS.get(provider_name, [])
+        cands = []
+        for op in statement_ops:
+            if op.get("direction") != "credit":
+                continue
+            ctry = op.get("counterparty") or {}
+            if not any(marker_str.lower() in (ctry.get(field) or "").lower()
+                       for field, marker_str in markers):
+                continue
+            cands.append(op)
+        match = None
+        for c in cands:
+            if abs(c["amount_kopecks"] - amount) <= 1:
+                match = c
+                break
+        out[(acc, date)] = {
+            "expected_kopecks": amount,
+            "candidates": len(cands),
+            "matched": match is not None,
+            "matched_op_id": match["operation_id"] if match else None,
+            "matched_amount": match["amount_kopecks"] if match else None,
+        }
+    return out
+
+
+def render_markdown(date: str, ozma: dict, provider_txs: List[dict],
+                    level1: Dict, level2: Dict, contacts: Dict, meta: dict,
+                    cert: Optional[dict] = None, brief: bool = False) -> str:
+    lines = []
+    fetched = meta.get("finished_at_utc", "")
+    lines.append(f"# Сверка платежей за {date}")
+    lines.append("")
+    lines.append(f"Собрано: {fetched}")
+    src_states = []
+    for name, s in meta.get("sources", {}).items():
+        mark = "✅" if s.get("ok") else "❌"
+        src_states.append(f"{mark} {name}")
+    lines.append(f"Источники: {'  '.join(src_states)}")
+    if not meta.get("sources", {}).get("ozma", {}).get("ok", True):
+        lines.append("⚠️ Озма недоступна — матчинг с заказами невозможен.")
+    day_closed = is_day_closed(date, meta.get("finished_at_utc"))
+    if day_closed is False:
+        lines.append("⚠️ День не закрыт на момент выгрузки: подтверждения по рассрочке "
+                     "приходят вечером (у CP разрыв между созданием и подтверждением — "
+                     "часы), а payout уходит на следующий день. Зависшие оплаты ниже — "
+                     "предварительные, сверить заново после 00:00 МСК.")
+
+    # Σ summary
+    lines.append("")
+    lines.append("## Сводка по каналам")
+    lines.append("")
+    lines.append("| Канал                      | Кол-во | Σ платежей  | Σ payout  | В выписке Tinkoff |")
+    lines.append("|----------------------------|--------|-------------|-----------|--------------------|")
+    by_label = defaultdict(lambda: {"count": 0, "amount": 0, "payout": 0})
+    for tx in provider_txs:
+        acc = tx.get("expected_ozma_account_id")
+        label = ACCOUNT_TO_LABEL.get(acc, str(acc))
+        by_label[label]["count"] += 1
+        by_label[label]["amount"] += tx.get("amount_kopecks", 0)
+        if tx.get("payout_amount_kopecks") is not None:
+            by_label[label]["payout"] += tx["payout_amount_kopecks"]
+    for label, agg in sorted(by_label.items()):
+        acc = next((v for k, v in CHANNEL_TO_ACCOUNT.items() if f"{k[0]}/{k[1] or '_'}" == label), None)
+        l2 = [m for (a, d), m in level2.items() if a == acc]
+        l2_mark = "✅" if any(m["matched"] for m in l2) else ("⚠️" if l2 else "—")
+        lines.append(f"| {label:26s} | {agg['count']:>6} | {agg['amount']/100:>9.0f} ₽ "
+                     f"| {agg['payout']/100:>7.0f} ₽ | {l2_mark} |")
+
+    # Money at the provider that never landed in the books — the loudest finding.
+    lines.append("")
+    lines.append("## 🚨 Оплачено у провайдера, в Озме «Ожидается оплата»")
+    lines.append("")
+    n_stuck = sum(len(r["stuck_pending"]) for r in level1.values())
+    if not n_stuck:
+        lines.append("_Зависших оплат нет._")
+    else:
+        lines.append(f"{n_stuck} заказ(ов): деньги у провайдера, в учёт не попали "
+                     f"(скорее всего не долетел вебхук).")
+        for acc in sorted(level1):
+            r = level1[acc]
+            for d in r["stuck_pending"]:
+                p_amount = d.get("p_amount") or 0
+                o_amount = d.get("o_amount") or 0
+                diff = "" if p_amount == o_amount else f" (в Озме {o_amount/100:.0f}₽)"
+                who = f", {d['customer_name']}" if d.get("customer_name") else ""
+                mark = "\U0001f7e1" if d.get("fresh") else "\U0001f534"
+                tail = (" — подтверждено только что, вебхук мог не успеть"
+                        if d.get("fresh") else "")
+                lines.append(f"- {mark} `{d['key']}` {p_amount/100:.0f}₽{diff} — {r['label']}, "
+                             f"provider={d.get('p_status')}, строка Озмы {d.get('ozma_tx_id')} "
+                             f"«{d.get('tks_state')}»{who}{tail}")
+
+    # Payments the provider has not confirmed yet — рассрочка в охлаждении, холд.
+    lines.append("")
+    lines.append("## ⏳ У провайдера в процессе (ждут подтверждения)")
+    lines.append("")
+    inflight_all = [(acc, d) for acc in sorted(level1) for d in level1[acc]["provider_pending"]]
+    if not inflight_all:
+        lines.append("_Незавершённых платежей у провайдеров нет._")
+    else:
+        lines.append(f"{len(inflight_all)} платёж(ей) ещё не подтверждены — это не расхождение, "
+                     f"вернуться к ним при перепроверке дня.")
+        for acc, d in inflight_all:
+            state = "в Озме «Ожидается оплата»" if d.get("ozma_pending") else "в Озме строки нет"
+            site = f", {d['site']}" if d.get("site") else ""
+            lines.append(f"- ⏳ `{d['key']}` {(d.get('amount') or 0)/100:.0f}₽ — "
+                         f"{level1[acc]['label']}{site}, {state}")
+
+    if brief:
+        lines.extend(_render_advisory(level1, contacts, cert, meta, date, day_closed))
+        return "\n".join(lines)
+
+    # Discrepancies
+    lines.append("")
+    lines.append("## Расхождения уровня 1 (заказ ↔ платёж)")
+    lines.append("")
+    any_l1 = False
+    skipped = unavailable_accounts(meta)
+    for acc, r in level1.items():
+        if acc in skipped:
+            continue  # источник не выгружен — сравнивать не с чем, ниже отдельный блок
+        if not (r["status_drift"] or r["amount_drift"] or r["only_in_ozma"]
+                or r["only_in_provider"] or r["stuck_pending"]):
+            continue
+        any_l1 = True
+        lines.append(f"### {r['label']} (account {acc})")
+        for d in r["status_drift"]:
+            p_side = d.get("p_status") or d.get("p_statuses") or "—"
+            o_side = d.get("o_status") or d.get("o_roles") or d.get("o_role") or "—"
+            lines.append(f"- \U0001f7e1 status drift `{d['key']}`: provider={p_side} / ozma={o_side}")
+        for d in r["amount_drift"]:
+            role = f" ({d['role']})" if d.get("role") else ""
+            lines.append(f"- \U0001f7e1 amount drift `{d['key']}`{role}: provider={d['p_amount']} / ozma={d['o_amount']}")
+        for d in r["only_in_provider"]:
+            extra = f" role={d['role']}" if d.get("role") else ""
+            note = f" — {d['note']}" if d.get("note") else ""
+            lines.append(f"- \U0001f534 only in provider `{d['key']}`:{extra} {d.get('amount', 0)/100:.0f}₽ site={d.get('site')}{note}")
+        for d in r["only_in_ozma"]:
+            extra = f" role={d['role']}" if d.get("role") else ""
+            lines.append(f"- \U0001f534 only in ozma `{d['key']}`:{extra} {d.get('amount', 0)/100:.0f}₽ tks_state={d.get('tks_state')}")
+        for d in r["stuck_pending"]:
+            lines.append(f"- \U0001f6a8 зависший pending `{d['key']}`: "
+                         f"{(d.get('p_amount') or 0)/100:.0f}₽ — см. секцию выше")
+    if not any_l1:
+        lines.append("_Все транзакции matched._")
+    unavailable = unavailable_channels(meta)
+    if unavailable:
+        lines.append("")
+    for name, reason, accs in unavailable:
+        # все строки Озмы по каналу остались без пары: и закрытые, и pending
+        n_rows = sum(level1[a]["ozma_count"] + len(level1[a]["pending_ignored"])
+                     for a in accs if a in level1)
+        lines.append(f"- ⚠️ `{name}` не выгружен ({reason}): {n_rows} стр. Озмы по каналу "
+                     f"не сверялись — это не расхождение, а пробел в данных.")
+    pending_all = sorted({oid for acc, r in level1.items() for oid in r["pending_ignored"]
+                          if acc not in skipped})
+    if pending_all:
+        lines.append("")
+        lines.append(f"ℹ️ Брошенные попытки, pending без денег у провайдера ({len(pending_all)}): "
+                     + ", ".join(f"`{i}`" for i in pending_all))
+
+    lines.append("")
+    lines.append("## Расхождения уровня 2 (Σ payout ↔ Tinkoff выписка)")
+    lines.append("")
+    any_l2_problem = False
+    for (acc, pdate), m in level2.items():
+        if m["matched"]:
+            continue
+        any_l2_problem = True
+        label = ACCOUNT_TO_LABEL.get(acc, str(acc))
+        lines.append(f"- \U0001f7e1 {label} payout_date={pdate}: ожидалось {m['expected_kopecks']/100:.0f}₽, "
+                     f"кандидатов в выписке: {m['candidates']}")
+    if not any_l2_problem:
+        lines.append("_Все Σ payout матчатся с выпиской._")
+
+    # Level 3: contacts
+    lines.append("")
+    lines.append("## Расхождения контактов (уровень 3)")
+    lines.append("")
+    n_contacts_total = sum(len(v) for v in contacts.values())
+    if not n_contacts_total:
+        lines.append("_Контакты совпадают._")
+    else:
+        n_mis = sum(1 for v in contacts.values() for d in v if d["category"] == "mismatch")
+        n_missing = sum(1 for v in contacts.values() for d in v if d["category"] == "missing_in_ozma")
+        n_orders = len({(acc, d["key"]) for acc, v in contacts.items() for d in v})
+        lines.append(f"{n_contacts_total} расхождений: {n_mis} mismatch, "
+                     f"{n_missing} missing_in_ozma по {n_orders} заказам")
+        for acc in sorted(contacts):
+            ds = contacts[acc]
+            if not ds:
+                continue
+            lines.append(f"### {ACCOUNT_TO_LABEL.get(acc, str(acc))} (account {acc})")
+            for d in ds:
+                if d["category"] == "missing_in_ozma":
+                    lines.append(f"- ➕ `{d['key']}` {d['field']}: "
+                                 f"provider={d['provider']} / в Ozma пусто")
+                else:
+                    ozma_str = "{" + ", ".join(str(x) for x in d["ozma"]) + "}"
+                    lines.append(f"- \U0001f7e1 `{d['key']}` {d['field']}: "
+                                 f"provider={d['provider']} / ozma={ozma_str}")
+
+    # Certificate auto-actions
+    if cert is not None:
+        lines.extend(render_cert_section(cert))
+
+    lines.extend(_render_advisory(level1, contacts, cert, meta, date, day_closed))
+
+    return "\n".join(lines)
+
+
+def _render_advisory(level1: Dict, contacts: Dict, cert: Optional[dict],
+                     meta: dict, date: str, day_closed: Optional[bool]) -> List[str]:
+    lines = ["", "## Что делать"]
+    advisory = []
+    skipped = unavailable_accounts(meta)
+    live = {acc: r for acc, r in level1.items() if acc not in skipped}
+    stuck_all = [d for acc in sorted(live) for d in live[acc]["stuck_pending"]]
+    stale = [d for d in stuck_all if not d.get("fresh")]
+    fresh = [d for d in stuck_all if d.get("fresh")]
+    if stale:
+        detail = ", ".join(f"{d['key']} ({(d.get('p_amount') or 0)/100:.0f}₽)" for d in stale)
+        advisory.append(f"- 🚨 Зависшие оплаты ({len(stale)}): деньги у провайдера, "
+                        f"в Озме «Ожидается оплата» — реплей вебхука или провести руками. {detail}")
+    if fresh:
+        detail = ", ".join(f"{d['key']} ({(d.get('p_amount') or 0)/100:.0f}₽)" for d in fresh)
+        advisory.append(f"- 🟡 Подтверждены только что ({len(fresh)}): вебхук мог не успеть — "
+                        f"перепроверить через час, до этого руками не проводить. {detail}")
+    inflight_all = [d for acc in sorted(live) for d in live[acc]["provider_pending"]]
+    if inflight_all:
+        advisory.append(f"- ⏳ Ждут подтверждения у провайдера ({len(inflight_all)}): рассрочка в "
+                        f"охлаждении или холд. Перепроверить день после 00:00 МСК.")
+    if day_closed is False:
+        advisory.append(f"- ⚠️ День {date} не закрыт: сверка предварительная, прогнать заново "
+                        f"после 00:00 МСК (вечерние подтверждения по рассрочке ещё не пришли).")
+    for name, reason, _ in unavailable_channels(meta):
+        advisory.append(f"- ⚠️ Канал `{name}` не выгружен ({reason}): по нему сверки не было, "
+                        f"починить доступ и прогнать день заново.")
+    n_status_drift = sum(len(r["status_drift"]) for r in live.values())
+    n_only_provider = sum(len(r["only_in_provider"]) for r in live.values())
+    n_only_ozma = sum(len(r["only_in_ozma"]) for r in live.values())
+    if n_status_drift:
+        advisory.append(f"- Status drift в Озме ({n_status_drift} строк): запустить mixplat_backfill_apply.py — закроется автоматически.")
+    if n_only_provider:
+        advisory.append(f"- Only in provider ({n_only_provider}): платежи прошли, заказа в Озме нет. Создать заказы руками.")
+    if n_only_ozma:
+        advisory.append(f"- Only in Ozma ({n_only_ozma}): tks_order_id есть в Озме, провайдер не вернул. Проверить статус через webhook реплей.")
+    n_c_missing = sum(1 for v in contacts.values() for d in v if d["category"] == "missing_in_ozma")
+    n_c_mismatch = sum(1 for v in contacts.values() for d in v if d["category"] == "mismatch")
+    if n_c_missing:
+        advisory.append(f"- Контакты missing_in_ozma ({n_c_missing}): у контакта нет этого канала — можно добавить communication_way вручную.")
+    if n_c_mismatch:
+        advisory.append(f"- Контакты mismatch ({n_c_mismatch}): значение провайдера не найдено среди контактов покупателя — проверить, не другой ли это человек / не сменились ли данные / корректность ФИО.")
+    if cert is not None:
+        n_cc = len(cert["comments"])
+        n_ff = len(cert["fio_fixes"])
+        n_mg = len(cert["merges"])
+        n_fr = len(cert["fraud_flags"])
+        if n_cc or n_ff or n_mg:
+            advisory.append(f"- 🎁 Сертификаты: предложено {n_cc} комментариев, "
+                            f"{n_ff} правок ФИО, {n_mg} слияний — применить после подтверждения (шаг 7 SKILL.md).")
+        if n_fr:
+            advisory.append(f"- ⚠️ Анти-фрод: {n_fr} погашений сертификата чужим лицом — проверить вручную.")
+    if not advisory:
+        advisory.append("- Расхождений нет. ✅")
+    lines.extend(advisory)
+    return lines
+
+
+def main():
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    brief = "--brief" in sys.argv[1:]
+    if len(args) != 1:
+        print("Usage: reconcile.py /tmp/reconcile_<date>/ [--brief]", file=sys.stderr)
+        sys.exit(2)
+    dir_ = Path(args[0]).resolve()
+    if not dir_.is_dir():
+        print(f"ERROR: {dir_} not a directory", file=sys.stderr)
+        sys.exit(2)
+    ozma = load_json(dir_ / "ozma.json") if (dir_ / "ozma.json").exists() else {"transactions": []}
+    provider_txs = collect_provider_txs(dir_)
+    meta_path = dir_ / "meta.json"
+    meta = load_json(meta_path) if meta_path.exists() else {}
+    level1 = match_level_1(ozma.get("transactions", []), provider_txs,
+                           fetched_at_utc=meta.get("finished_at_utc"))
+
+    statement_ops = []
+    spath = dir_ / "tinkoff.json"
+    if spath.exists():
+        body = load_json(spath)
+        if isinstance(body, dict):
+            statement_ops = body.get("operations", []) or []
+    level2 = match_level_2(sum_payouts_by_date(provider_txs), statement_ops)
+
+    # Level 3: contact comparison on orders present on both sides.
+    comparable = set()
+    for acc, r in level1.items():
+        for bucket in ("match", "amount_drift", "status_drift"):
+            for d in r.get(bucket, []):
+                k = d.get("key")
+                if k is not None:
+                    comparable.add((acc, str(k)))
+    people_by_id, comm_by_contact = {}, defaultdict(list)
+    cpath = dir_ / "ozma_contacts.json"
+    if cpath.exists():
+        cb = load_json(cpath)
+        for p in cb.get("people", []):
+            pid = _ref_id(p.get("id"))
+            if pid is not None:
+                people_by_id[pid] = p
+        for cw in cb.get("communication_ways", []):
+            cid = _ref_id(cw.get("contact"))
+            if cid is not None:
+                comm_by_contact[cid].append(cw)
+    contacts = compare_contacts(comparable, provider_txs, ozma.get("transactions", []),
+                                people_by_id, comm_by_contact)
+
+    cert = build_cert_actions(ozma.get("transactions", []), provider_txs,
+                              people_by_id, comm_by_contact)
+    (dir_ / "cert_actions.json").write_text(
+        json.dumps(cert, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    md = render_markdown(ozma.get("date", "?"), ozma, provider_txs, level1, level2,
+                         contacts, meta, cert, brief=brief)
+    (dir_ / ("report_brief.md" if brief else "report.md")).write_text(md, encoding="utf-8")
+    print(md)
+
+
+if __name__ == "__main__":
+    main()
