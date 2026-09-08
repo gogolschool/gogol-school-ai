@@ -1,5 +1,7 @@
 # Лана: ежедневная проверка «Шаблон рассылки» / «Расписание» — Implementation Plan
 
+> **Актуализация 06.09.2026:** в проде фильтр окна переведён с `pl_start_date` на `action_datetime` (у ОУ в `pl_start_date` даты лаборатории, а не урока). Тексты промпта ниже — исторические, действующая версия и обоснование — в спеке `docs/superpowers/specs/2026-08-25-lana-newsletter-schedule-check-design.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Лана раз в день (10:00 МСК, каждый день включая выходные) проверяет продукты со стартом в ближайшие 3 дня на пустые поля «Шаблон рассылки» и «Расписание» (для многозанятийных) и пингует @Beverkar2 в топике `988` чата `-1003933036305`.
@@ -230,4 +232,17 @@ EOF
 
 ```bash
 ssh root@ozma.gogol.school "systemctl stop lana-bot && cp /home/agentbot/bots/lana/bot.py.bak-20260825 /home/agentbot/bots/lana/bot.py && systemctl start lana-bot && systemctl is-active lana-bot"
+```
+
+---
+
+## Правки после релиза
+
+**27.08.2026 — исключение МК по абонементу.** В `ORCH_NEWSLETTER_PROMPT` в оба запроса добавлен фильтр
+`AND (class_type IS NULL OR class_type <> 18)` — АМК из проверки выпадают (обоснование и контекст в спеке,
+раздел «Кого и где проверяем»). Деплой по той же процедуре: бэкап `bot.py.bak-20260827`, `scp`,
+`chown agentbot:agentbot`, `py_compile`, `systemctl restart lana-bot`. Откат:
+
+```bash
+ssh root@ozma.gogol.school "systemctl stop lana-bot && cp /home/agentbot/bots/lana/bot.py.bak-20260827 /home/agentbot/bots/lana/bot.py && systemctl start lana-bot && systemctl is-active lana-bot"
 ```
