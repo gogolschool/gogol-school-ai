@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1080" width="1080" height="1080" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+  <defs>
+    <style>
+      .bg   { fill: #14110f; }
+      .card { fill: #1d1a17; }
+      .h1   { fill: #f5f1ea; font-size: 62px; font-weight: 700; letter-spacing: -1px; }
+      .h2   { fill: #f5f1ea; font-size: 34px; font-weight: 600; }
+      .sum  { fill: #f5f1ea; font-size: 52px; font-weight: 700; }
+      .lbl  { fill: #9a9188; font-size: 25px; font-weight: 500; }
+      .lblb { fill: #d8d0c6; font-size: 26px; font-weight: 600; }
+      .foot { fill: #9a9188; font-size: 27px; font-weight: 500; }
+      .kick { fill: #d98b4a; font-size: 26px; font-weight: 700; letter-spacing: 3px; }
+      .tot  { fill: #d98b4a; font-size: 40px; font-weight: 700; }
+      .num  { fill: #14110f; font-size: 30px; font-weight: 700; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1080" height="1080"/>
+
+  <text class="kick" x="80" y="118">GOGOL SCHOOL</text>
+  <text class="h1"   x="80" y="212">Рассрочка</text>
+  <text class="h1"   x="80" y="286">на осенние лаборатории</text>
+
+  <text class="lbl" x="80" y="356">Полная стоимость</text>
+  <text class="tot" x="80" y="410">98 000 ₽ — тремя платежами</text>
+
+  <!-- timeline: 24 занятия, 4 + 4 + 16 -->
+  <g transform="translate(80, 470)">
+    <rect x="0"   y="0" width="153" height="26" rx="6" fill="#d98b4a"/>
+    <rect x="161" y="0" width="153" height="26" rx="6" fill="#c2703a"/>
+    <rect x="322" y="0" width="598" height="26" rx="6" fill="#48423b"/>
+    <text class="lbl" x="0"   y="66">4 занятия</text>
+    <text class="lbl" x="161" y="66">4 занятия</text>
+    <text class="lbl" x="322" y="66">16 занятий + показ</text>
+  </g>
+
+  <!-- three payments -->
+  <g transform="translate(80, 596)">
+    <rect class="card" x="0" y="0" width="920" height="118" rx="14"/>
+    <circle cx="58" cy="59" r="26" fill="#d98b4a"/>
+    <text class="num"  x="58"  y="69" text-anchor="middle">1</text>
+    <text class="lblb" x="112" y="50">до первого занятия</text>
+    <text class="lbl"  x="112" y="88">открывает занятия 1–4</text>
+    <text class="sum"  x="900" y="78" text-anchor="end">29 400 ₽</text>
+  </g>
+
+  <g transform="translate(80, 730)">
+    <rect class="card" x="0" y="0" width="920" height="118" rx="14"/>
+    <circle cx="58" cy="59" r="26" fill="#d98b4a"/>
+    <text class="num"  x="58"  y="69" text-anchor="middle">2</text>
+    <text class="lblb" x="112" y="50">до пятого занятия</text>
+    <text class="lbl"  x="112" y="88">открывает занятия 5–8</text>
+    <text class="sum"  x="900" y="78" text-anchor="end">49 000 ₽</text>
+  </g>
+
+  <g transform="translate(80, 864)">
+    <rect class="card" x="0" y="0" width="920" height="118" rx="14"/>
+    <circle cx="58" cy="59" r="26" fill="#d98b4a"/>
+    <text class="num"  x="58"  y="69" text-anchor="middle">3</text>
+    <text class="lblb" x="112" y="50">до девятого занятия</text>
+    <text class="lbl"  x="112" y="88">открывает занятия 9–24 и показ</text>
+    <text class="sum"  x="900" y="78" text-anchor="end">19 600 ₽</text>
+  </g>
+
+  <text class="foot" x="540" y="1032" text-anchor="middle">Без банка, без процентов, без переплаты</text>
+</svg>
