@@ -16,6 +16,7 @@
 import os
 import sys
 import json
+import urllib.error
 import urllib.request
 from datetime import datetime
 
@@ -33,6 +34,27 @@ def api(path, method="GET", body=None):
     return json.load(urllib.request.urlopen(req))["data"]
 
 
+def all_services():
+    """Все услуги постранично.
+
+    У /services параметр limit молча режется до 50 (сколько ни проси), поэтому
+    единственный способ увидеть весь каталог — идти по page. Раньше здесь стоял
+    limit=1000 без пагинации: сверялись первые 50 услуг из 1145.
+    """
+    items, page, seen = [], 1, set()
+    while True:
+        batch = api(f"/services?limit=50&page={page}")["items"]
+        fresh = [i for i in batch if i["id"] not in seen]
+        if not fresh:
+            break
+        seen.update(i["id"] for i in fresh)
+        items += fresh
+        page += 1
+        if page > 200:                             # предохранитель от зацикливания
+            break
+    return items
+
+
 def parse(dt):
     """Даты приходят как «ДД.ММ.ГГГГ ЧЧ:ММ:СС» либо просто «ДД.ММ.ГГГГ»."""
     if not dt:
@@ -43,6 +65,35 @@ def parse(dt):
         except ValueError:
             continue
     return None
+
+
+def page_broken(sid):
+    """Правда ли страница оплаты услуги недоступна клиенту.
+
+    Дёргаем только для услуг с нулевой ценой — их единицы, на прогон не влияет.
+    Признак поломки — HTTP 404: у недоступной услуги страница просто не отдаётся.
+    Фразы «Услуга не найдена» в HTML при этом НЕТ (там обычная 404-я), так что
+    искать её текстом бесполезно — проверено 08.09.2026.
+    Сеть подвела — считаем страницу целой и молчим: ложная тревога хуже пропуска.
+    """
+    try:
+        req = urllib.request.Request(
+            f"https://gogolschool.ru/payment/{sid}/",
+            headers={"User-Agent": "catalog-price-sync"})
+        resp = urllib.request.urlopen(req, timeout=20)
+        return resp.getcode() != 200
+    except urllib.error.HTTPError as e:
+        return e.code == 404
+    except Exception:                              # noqa: BLE001
+        return False                               # сеть подвела — молчим
+
+
+def num(v):
+    """Цена как целое; None, если поле пустое или не число («», «—», мусор)."""
+    try:
+        return int(float(str(v).strip()))
+    except (TypeError, ValueError):
+        return None
 
 
 def active_rows(prices, now):
@@ -62,8 +113,12 @@ def check(service, now):
     sid, name = service["id"], service["name"]
     problems, fix = [], None
 
-    if service.get("price") in (0, "0", None):
-        problems.append(f"{sid} {name}: каталожная цена 0 — страница отдаёт «Услуга не найдена»")
+    # Нулевая цена сама по себе не поломка: у бесплатных МК так и должно быть
+    # (страница рендерится, просто без способов оплаты). Ругаемся, только если
+    # страница действительно отдаёт «Услуга не найдена» — это проверяем, а не
+    # предполагаем: раньше фраза дописывалась к любому нулю и вводила в заблуждение.
+    if service.get("price") in (0, "0", None) and page_broken(sid):
+        problems.append(f"{sid} {name}: каталожная цена 0 и страница отдаёт «Услуга не найдена»")
 
     prices = [r for r in (service.get("prices") or []) if isinstance(r, dict)]
     if not prices:
@@ -77,7 +132,7 @@ def check(service, now):
         problems.append(f"{sid} {name}: ни одна ценовая пара не действует сегодня")
         return fix, problems
     if len(full) > 1:
-        sums = ", ".join(r["PRICE"] for r in full)
+        sums = ", ".join(str(r.get("PRICE") or "—") for r in full)
         problems.append(f"{sid} {name}: одновременно действуют несколько цен ({sums}) — проверить даты пар")
         return fix, problems
 
@@ -86,8 +141,14 @@ def check(service, now):
         problems.append(
             f"{sid} {name}: у действующей пары CHECKED≠2 — рассрочка/Долями/Сплит скрыты с формы")
 
-    want = int(row["PRICE"])
-    have = int(service.get("price") or 0)
+    # Пустая/нечисловая цена в действующей паре — это данные, а не повод падать:
+    # раньше скрипт видел лишь 50 услуг и до таких строк просто не доходил.
+    want, have = num(row.get("PRICE")), num(service.get("price")) or 0
+    if want is None:
+        problems.append(
+            f"{sid} {name}: у действующей пары пустая или нечисловая цена "
+            f"({row.get('PRICE')!r}) — каталожную не трогаю")
+        return fix, problems
     if want != have:
         fix = (sid, name, have, want, row.get("NAME", ""))
     return fix, problems
@@ -108,7 +169,7 @@ def notify(lines):
 
 def main():
     now = datetime.now()
-    items = api("/services?limit=1000")["items"]
+    items = all_services()
     fixes, problems = [], []
 
     for it in items:
@@ -118,6 +179,8 @@ def main():
             problems.append(f"{it['id']}: не удалось прочитать ({e})")
             continue
         if s.get("active") != "Y":
+            continue
+        if str(s.get("available")) == "0":          # снята с продажи (прошлые сезоны)
             continue
         at = parse(s.get("activeTo"))
         if at and at < now:                        # приём оплаты уже закрыт
