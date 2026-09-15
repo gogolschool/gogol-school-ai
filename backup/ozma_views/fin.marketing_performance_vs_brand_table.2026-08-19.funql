@@ -1,0 +1,86 @@
+{
+    $period enum('Финансовый год', 'квартал', 'месяц') default 'Финансовый год' @{
+        caption = 'Период'
+    }
+}:
+with result_table as(
+select
+    pl_categories.name as category,
+    sum(case when mt.name = 'Перформанс' then 0-r.amount else 0 end) as performance,
+    sum(case when mt.name = 'Бренд' then 0-r.amount else 0 end) as brand,
+    sum(case when mt.name is null then 0-r.amount else 0 end) as not_set,
+    sum(0-r.amount) as total
+from fin.pl_report_final as r
+left join fin.marketing_types as mt
+    on mt.id = r.external_transaction=>marketing_type
+left join fin.pl_categories on pl_categories.id = r.category
+where pl_categories.name in (
+    'Реклама', 
+    'Общий маркетинг',
+    'Полиграфия',
+    'Внешние сотрудники',
+    'Маркетинг B2C TOP',
+    'Маркетинг B2B',
+    'IT-доработки Маркетинг'
+)
+and transaction_type = 'Расход'
+and external_transaction is not null
+and (
+    case
+    when $period = 'Финансовый год' then
+        pl_date >= (
+            (
+                case
+                    when ($$transaction_time + '3 hours'::interval) >= (date_trunc('year', $$transaction_time + '3 hours'::interval) + '8 months'::interval)
+                        then date_trunc('year', $$transaction_time + '3 hours'::interval) + '8 months'::interval
+                    else
+                        date_trunc('year', $$transaction_time + '3 hours'::interval) - '4 months'::interval
+                end
+            ) - '3 hours'::interval
+        )
+
+    when $period = 'месяц' then
+        pl_date >= (date_trunc('month', $$transaction_time + '3 hours'::interval) - '3 hours'::interval)
+        and pl_date < (date_trunc('month', $$transaction_time + '3 hours'::interval) + '1 month'::interval - '3 hours'::interval)
+
+    when $period = 'квартал' then
+        pl_date >= (
+            date_trunc('quarter', ($$transaction_time + '3 hours'::interval) - '8 months'::interval)
+            + '8 months'::interval
+            - '3 hours'::interval
+        )
+        and pl_date < (
+            date_trunc('quarter', ($$transaction_time + '3 hours'::interval) - '8 months'::interval)
+            + '11 months'::interval
+            - '3 hours'::interval
+        )
+
+    else
+        true
+    end
+)
+group by r.category, pl_categories.name
+order by r.category
+)
+select 
+    @title = 'Маркетинг: Перформанс vs Бренд',
+    category @{
+        caption = 'Категория'
+    },
+    performance @{
+        caption = 'Перформанс, ₽',
+        number_format = 'ru'
+    },
+    brand @{
+        caption = 'Бренд, ₽',
+        number_format = 'ru'
+    },
+    not_set @{
+        caption = 'Не указано, ₽',
+        number_format = 'ru'
+    },
+    total @{
+        caption = 'Итого, ₽',
+        number_format = 'ru'
+    }
+from result_table

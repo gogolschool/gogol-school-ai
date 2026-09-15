@@ -1,0 +1,8 @@
+{
+  "snapshot": "2026-09-08, перед выравниванием каталожной цены по PRICES",
+  "note": "PRICES не трогали; страницы уже отдавали новую цену, отставала только каталожная",
+  "catalog_prices_before": [
+    {"productId": 38330, "name": "HEAD11", "priceId": 1928, "catalogGroupId": 1, "price": 200000, "target": 220000},
+    {"productId": 41464, "name": "LCOURSE02-202610", "priceId": 2102, "catalogGroupId": 1, "price": 49000, "target": 58000}
+  ]
+}

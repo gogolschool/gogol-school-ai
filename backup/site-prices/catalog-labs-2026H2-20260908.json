@@ -1,0 +1,10 @@
+{
+  "snapshot": "2026-09-08, перед сменой каталожной цены 95000 -> 98000",
+  "note": "свойство PRICES не трогали: действующая пара уже 98000 (ACTIVE_FROM 02.09.2026 08:00, CHECKED=2)",
+  "catalog_prices_before": [
+    {"productId": 41459, "name": "LAB01-2026H2", "priceId": 2097, "catalogGroupId": 1, "price": 95000},
+    {"productId": 41460, "name": "LAB02-2026H2", "priceId": 2098, "catalogGroupId": 1, "price": 95000},
+    {"productId": 41461, "name": "LAB03-2026H2", "priceId": 2099, "catalogGroupId": 1, "price": 95000},
+    {"productId": 41462, "name": "LAB04-2026H2", "priceId": 2100, "catalogGroupId": 1, "price": 95000}
+  ]
+}
