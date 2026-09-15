@@ -1,0 +1,398 @@
+{
+ "41459": [
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "8900",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "",
+   "ACTIVE_TO": "06.08.2026 09:01:00",
+   "CREDIT": "Y",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при оплате сразу",
+   "PRICE": "89000",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "",
+   "ACTIVE_TO": "06.08.2026 09:01:00",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "9500",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "06.08.2026 09:01:00",
+   "ACTIVE_TO": "02.09.2026 00:01:00",
+   "CREDIT": "Y",
+   "NAME_SECOND": "при рассрочке на 10 месяцев",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "сразу",
+   "PRICE": "95000",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "06.08.2026 09:01:00",
+   "ACTIVE_TO": "02.09.2026 00:01:00",
+   "NAME_SECOND": "при оплате сразу",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "9800",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "02.09.2026 00:01:00",
+   "ACTIVE_TO": "",
+   "CREDIT": "Y",
+   "NAME_SECOND": "при рассрочке на 10 месяцев",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при оплате с 2 сентября ",
+   "PRICE": "98000",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "02.09.2026 00:01:00",
+   "ACTIVE_TO": "",
+   "NAME_SECOND": "при оплате сразу",
+   "FULL_PRICE": ""
+  }
+ ],
+ "41460": [
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "8900",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "",
+   "ACTIVE_TO": "06.08.2026 09:01:00",
+   "CREDIT": "Y",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при оплате сразу",
+   "PRICE": "89000",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "",
+   "ACTIVE_TO": "06.08.2026 09:01:00",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "9500",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "06.08.2026 09:01:00",
+   "ACTIVE_TO": "02.09.2026 00:01:00",
+   "CREDIT": "Y",
+   "NAME_SECOND": "при рассрочке на 10 месяцев",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "сейчас",
+   "PRICE": "95000",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "06.08.2026 09:01:00",
+   "ACTIVE_TO": "02.09.2026 00:01:00",
+   "NAME_SECOND": "при оплате сразу",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "9800",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "02.09.2026 00:01:00",
+   "ACTIVE_TO": "",
+   "CREDIT": "Y",
+   "NAME_SECOND": "при рассрочке на 10 месяцев",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при оплате с 2 сентября ",
+   "PRICE": "98000",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "02.09.2026 00:01:00",
+   "ACTIVE_TO": "",
+   "NAME_SECOND": "при оплате сразу",
+   "FULL_PRICE": ""
+  }
+ ],
+ "41461": [
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "8900",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "",
+   "ACTIVE_TO": "06.08.2026 09:01:00",
+   "CREDIT": "Y",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при оплате сразу",
+   "PRICE": "89000",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "",
+   "ACTIVE_TO": "06.08.2026 09:01:00",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "9500",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "06.08.2026 09:01:00",
+   "ACTIVE_TO": "02.09.2026 00:01:00",
+   "CREDIT": "Y",
+   "NAME_SECOND": "при рассрочке на 10 месяцев",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "сейчас",
+   "PRICE": "95000",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "06.08.2026 09:01:00",
+   "ACTIVE_TO": "02.09.2026 00:01:00",
+   "NAME_SECOND": "при оплате сразу",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "9800",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "02.09.2026 00:01:00",
+   "ACTIVE_TO": "",
+   "CREDIT": "Y",
+   "NAME_SECOND": "при рассрочке на 10 месяцев",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при оплате с 2 сентября ",
+   "PRICE": "98000",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "02.09.2026 00:01:00",
+   "ACTIVE_TO": "",
+   "NAME_SECOND": "при оплате сразу",
+   "FULL_PRICE": ""
+  }
+ ],
+ "41462": [
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "8900",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "",
+   "ACTIVE_TO": "06.08.2026 09:01:00",
+   "CREDIT": "Y",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при оплате сразу",
+   "PRICE": "89000",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "",
+   "ACTIVE_TO": "06.08.2026 09:01:00",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "9500",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "06.08.2026 09:01:00",
+   "ACTIVE_TO": "02.09.2026 00:01:00",
+   "CREDIT": "Y",
+   "NAME_SECOND": "при рассрочке на 10 месяцев",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "сейчас",
+   "PRICE": "95000",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "06.08.2026 09:01:00",
+   "ACTIVE_TO": "02.09.2026 00:01:00",
+   "NAME_SECOND": "при оплате сразу",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "9800",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "02.09.2026 00:01:00",
+   "ACTIVE_TO": "",
+   "CREDIT": "Y",
+   "NAME_SECOND": "при рассрочке на 10 месяцев",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при оплате с 2 сентября ",
+   "PRICE": "98000",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "02.09.2026 00:01:00",
+   "ACTIVE_TO": "",
+   "NAME_SECOND": "при оплате сразу",
+   "FULL_PRICE": ""
+  }
+ ],
+ "41464": [
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "4900",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "05.05.2026 15:09:00",
+   "ACTIVE_TO": "02.09.2026 00:00:00",
+   "CREDIT": "Y",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "сейчас",
+   "PRICE": "49000",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "05.05.2026 15:09:00",
+   "ACTIVE_TO": "02.09.2026 00:00:00",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "5800",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "02.09.2026 00:00:00",
+   "ACTIVE_TO": "",
+   "CREDIT": "Y",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при оплате со 2 сентября",
+   "PRICE": "58000",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "02.09.2026 00:00:00",
+   "ACTIVE_TO": "",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  }
+ ],
+ "41465": [
+  {
+   "NAME": "сейчас",
+   "PRICE": "49000",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "25.08.2026 00:00:00",
+   "ACTIVE_TO": "13.01.2027 23:59:00",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "4900",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "25.08.2026 00:00:00",
+   "ACTIVE_TO": "13.01.2027 23:59:00",
+   "CREDIT": "Y",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при оплате с 14 января",
+   "PRICE": "58000",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "",
+   "ACTIVE_TO": "",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "5800",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "",
+   "ACTIVE_TO": "",
+   "CREDIT": "Y",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  }
+ ],
+ "41466": [
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "4900",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "05.05.2026 15:09:00",
+   "ACTIVE_TO": "01.10.2026 00:00:00",
+   "CREDIT": "Y",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "сейчас",
+   "PRICE": "49000",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "05.05.2026 15:09:00",
+   "ACTIVE_TO": "01.10.2026 00:00:00",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "5800",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "01.10.2026 00:00:00",
+   "ACTIVE_TO": "",
+   "CREDIT": "Y",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при оплате с 1 октября",
+   "PRICE": "58000",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "01.10.2026 00:00:00",
+   "ACTIVE_TO": "",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  }
+ ],
+ "41467": [
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "4900",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "05.05.2026 15:09:00",
+   "ACTIVE_TO": "21.10.2026 00:00:00",
+   "CREDIT": "Y",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "сейчас",
+   "PRICE": "49000",
+   "CHECKED": "2",
+   "ACTIVE_FROM": "05.05.2026 15:09:00",
+   "ACTIVE_TO": "21.10.2026 00:00:00",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при рассрочке на 10 месяцев",
+   "PRICE": "5800",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "21.10.2026 00:00:00",
+   "ACTIVE_TO": "",
+   "CREDIT": "Y",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  },
+  {
+   "NAME": "при оплате с 21 октября",
+   "PRICE": "58000",
+   "CHECKED": "1",
+   "ACTIVE_FROM": "21.10.2026 00:00:00",
+   "ACTIVE_TO": "",
+   "NAME_SECOND": "",
+   "FULL_PRICE": ""
+  }
+ ]
+}
