@@ -20,3 +20,6 @@ analytics/
 
 # Локальный кэш мастер-промптов из Notion (генерится scripts/cache-master-prompts.py, у каждой машины свой)
 **/references/master-prompt.cache.md
+
+__pycache__/
+*.pyc
