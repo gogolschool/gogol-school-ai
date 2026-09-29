@@ -1,0 +1,12 @@
+[Unit]
+Description=Notion: теги Кати/Бэллы в таблице продуктов -> задачи в «Документооборот и точка»
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=agentbot
+WorkingDirectory=/home/agentbot/bots/notion-mentions
+EnvironmentFile=/home/agentbot/bots/taylor/.env
+ExecStart=/usr/bin/python3 /home/agentbot/bots/notion-mentions/notion_mentions.py
+TimeoutStartSec=600
