@@ -120,7 +120,7 @@ def notion(method, path, body=None, tries=5):
             with urllib.request.urlopen(req, timeout=60) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
-            if e.code in (429, 502, 503) and attempt < tries - 1:
+            if e.code in (429, 500, 502, 503, 504) and attempt < tries - 1:
                 time.sleep(float(e.headers.get("Retry-After") or 2 ** attempt))
                 continue
             raise NotionError(e.code, "%s %s → %s" % (method, path, e.read()[:300].decode("utf-8", "replace")))

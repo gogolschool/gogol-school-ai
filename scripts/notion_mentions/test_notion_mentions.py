@@ -251,3 +251,29 @@ def test_three_failures_alert_once_and_success_resets(env, monkeypatch):
     monkeypatch.setattr(nm, "notion", FakeNotion([], {}))
     assert nm.main([]) == 0
     assert json.loads((env / "fails.json").read_text())["fails"] == 0
+
+
+@pytest.mark.parametrize("code", [500, 502, 503, 504])
+def test_notion_retries_transient_server_errors(monkeypatch, code):
+    import io
+    import urllib.error
+    calls = []
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    def fake_urlopen(req, timeout):
+        calls.append(1)
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(req.full_url, code, "err", {}, io.BytesIO(b"{}"))
+        return Resp(b'{"ok": true}')
+
+    monkeypatch.setenv("NOTION_TOKEN", "x")
+    monkeypatch.setattr(nm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(nm.time, "sleep", lambda s: None)
+    assert nm.notion("GET", "/users/me") == {"ok": True}
+    assert len(calls) == 2
