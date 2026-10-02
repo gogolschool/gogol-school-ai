@@ -1,0 +1,12 @@
+[Unit]
+Description=Notion: новый B2B-продукт в Озме -> задача Кате в «Документооборот и точка»
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=agentbot
+WorkingDirectory=/home/agentbot/bots/b2b-product-tasks
+EnvironmentFile=/home/agentbot/bots/taylor/.env
+ExecStart=/usr/bin/python3 /home/agentbot/bots/b2b-product-tasks/b2b_product_tasks.py
+TimeoutStartSec=600

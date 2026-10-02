@@ -1,0 +1,9 @@
+[Unit]
+Description=b2b-product-tasks каждые 10 минут
+
+[Timer]
+OnCalendar=*:5/10
+Persistent=true
+
+[Install]
+WantedBy=timers.target
