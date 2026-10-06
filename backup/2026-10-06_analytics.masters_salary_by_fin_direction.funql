@@ -1,0 +1,131 @@
+{
+    $month int null @{ caption = 'Месяц' },
+    $year int null @{ caption = 'Год' }
+}:
+    WITH all_data AS (
+        -- Основные занятия
+        SELECT
+            visits_for_lessons.contact AS master_id,
+            COALESCE(
+                products.fin_segment=>name,
+                ct.segment=>name,
+                CASE
+                    WHEN ct.name IN ('HEAD', 'ОУ HEAD') THEN 'B2C TOP'
+                    WHEN ct.name IN ('Абонемент', 'МК по абонементу', 'Лаборатория', 'Интенсив', 'Интенсив YNG', 'YEAR', 'Открытый урок', 'Открытый урок YNG', 'Интенсив СПБ', 'МК СПБ') THEN 'B2C'
+                    ELSE 'Неизвестно'
+                END
+            ) AS fin_direction,
+            (CASE WHEN visits_for_lessons.rate_manually IS NULL THEN
+                (CASE
+                    WHEN masters_for_actions.is_stage_producer THEN 0
+                    WHEN visits_for_lessons.action=>name IN ('ACT03-2021H1','ACT10-2021H2','ACT03-2022H1') THEN rates_for_masters.rate_for_one
+                    WHEN visits_for_lessons.masters = 1 THEN rates_for_masters.rate_for_one
+                    WHEN visits_for_lessons.masters = 2 THEN rates_for_masters.rate_for_two
+                    WHEN visits_for_lessons.masters = 3 THEN rates_for_masters.rate_for_three
+                    WHEN visits_for_lessons.masters >= 4 THEN rates_for_masters.rate_for_four
+                    WHEN masters_visits.masters_count = 1 THEN rates_for_masters.rate_for_one
+                    WHEN masters_visits.masters_count = 2 THEN rates_for_masters.rate_for_two
+                    WHEN masters_visits.masters_count = 3 THEN rates_for_masters.rate_for_three
+                    WHEN masters_visits.masters_count >= 4 THEN rates_for_masters.rate_for_four
+                END)
+            ELSE
+                visits_for_lessons.rate_manually
+            END) * COALESCE(visits_for_lessons.hours_manually, visits_for_lessons.hours_calculated) AS summ
+        FROM crm.visits_for_lessons
+            LEFT JOIN base.people
+                ON visits_for_lessons.contact = people.id
+            LEFT JOIN (
+                SELECT
+                    COALESCE(all_masters.cnt, 0) - COALESCE(stage_producers.cnt, 0) AS masters_count,
+                    all_masters.action
+                FROM (
+                    (
+                        SELECT
+                            visits_for_lessons.action,
+                            COUNT(visits_for_lessons.id) AS cnt
+                        FROM crm.visits_for_lessons
+                            LEFT JOIN base.people ON people.id = visits_for_lessons.contact
+                        WHERE people.is_employee
+                          AND visits_for_lessons."datetime" IS NOT NULL
+                        GROUP BY visits_for_lessons.action
+                    ) AS all_masters
+                    LEFT JOIN (
+                        SELECT
+                            visits_for_lessons.action,
+                            COUNT(visits_for_lessons.id) AS cnt,
+                        FROM crm.actions
+                            LEFT JOIN crm.actions AS lessons ON lessons.parent_action = actions.id
+                            LEFT JOIN crm.visits_for_lessons ON visits_for_lessons.action = lessons.id
+                            LEFT JOIN base.people ON visits_for_lessons.contact = people.id
+                            LEFT JOIN crm.masters_for_actions
+                                ON masters_for_actions.action = actions.id
+                                AND masters_for_actions.contact = visits_for_lessons.contact
+                        WHERE people.is_employee
+                          AND visits_for_lessons."datetime" IS NOT NULL
+                          AND masters_for_actions.is_stage_producer
+                        GROUP BY visits_for_lessons.action
+                    ) AS stage_producers ON all_masters.action = stage_producers.action
+                )
+            ) AS masters_visits ON masters_visits.action = visits_for_lessons.action
+            LEFT JOIN crm.actions AS lessons ON visits_for_lessons.action = lessons.id
+            LEFT JOIN crm.masters_for_actions
+                ON masters_for_actions.action = lessons.parent_action
+                AND masters_for_actions.contact = visits_for_lessons.contact
+            LEFT JOIN crm.actions AS products ON products.id = lessons.parent_action
+            LEFT JOIN crm.class_type AS ct ON ct.id = products.class_type
+            LEFT JOIN hrm.rates_for_masters
+                ON rates_for_masters.master = people.id
+                AND rates_for_masters.type = products.class_type
+                AND visits_for_lessons."datetime" >= COALESCE(rates_for_masters.start_date, '2000-01-01'::date)
+                AND visits_for_lessons."datetime" <= COALESCE(rates_for_masters.end_date + '1 day'::interval - '1 minute'::interval, '2100-01-01'::date)
+        WHERE people.is_employee
+          AND visits_for_lessons."datetime" IS NOT NULL
+          AND ($month IS NULL OR date_part('month', visits_for_lessons."datetime") = $month)
+          AND ($year IS NULL OR date_part('year', visits_for_lessons."datetime") = $year)
+
+        UNION ALL
+
+        -- Дополнительные занятия с заполненным направлением
+        SELECT
+            mal.master AS master_id,
+            mal.fin_segment=>name AS fin_direction,
+            COALESCE(mal.price, 0) AS summ
+        FROM staffs.masters_additional_lessons AS mal
+        WHERE mal.fin_segment IS NOT NULL
+          AND ($month IS NULL OR date_part('month', mal."date") = $month)
+          AND ($year IS NULL OR date_part('year', mal."date") = $year)
+    ),
+    grouped AS (
+        SELECT
+            fin_direction,
+            master_id,
+            SUM(summ) AS summ
+        FROM all_data
+        GROUP BY fin_direction, master_id
+    )
+    SELECT
+        @type = 'table',
+        @title = 'ЗП сотрудников по фин. направлениям',
+        @export_to_csv = true,
+        @show_argument_editor = true,
+        fin_direction @{
+            caption = 'Фин. направление',
+            column_width = 120
+        },
+        p.main_name @{
+            caption = 'Сотрудник',
+            column_width = 200
+        },
+        $month @{ column_width = 55, text_align = 'center' },
+        $year @{ column_width = 55, text_align = 'center' },
+        summ @{
+            caption = 'Сумма ЗП',
+            number_format = 'ru',
+            column_width = 110
+        }
+    FROM grouped
+        LEFT JOIN base.people AS p ON p.id = grouped.master_id
+    WHERE grouped.summ <> 0
+    ORDER BY
+        fin_direction,
+        p.main_name

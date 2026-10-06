@@ -1,0 +1,49 @@
+{
+    $month int,
+    $year int,
+    $master reference(base.people) null
+}:
+WITH all_summs AS (
+    SELECT summ FROM (
+        SELECT
+            vfl.action as action_id,
+            SUM(calc_visit_payout(vfl.id)) as summ
+        FROM crm.visits_for_lessons as vfl
+        LEFT JOIN base.people as p ON vfl.contact = p.id
+        LEFT JOIN crm.actions as les ON vfl.action = les.id
+        LEFT JOIN crm.masters_for_actions as mfa ON mfa.action = les.parent_action AND mfa.contact = vfl.contact
+        WHERE p.is_employee AND vfl."datetime" IS NOT NULL
+          AND (($month = 0 AND $year = 0) OR (date_part('month', vfl."datetime") = $month AND date_part('year', vfl."datetime") = $year))
+          AND ($master IS NULL OR vfl.contact = $master)
+          AND NOT mfa.is_stage_producer
+        GROUP BY vfl.action
+        UNION ALL
+        SELECT null as action_id, ml.price as summ
+        FROM staffs.masters_additional_lessons as ml
+        WHERE ($master IS NULL OR ml.master = $master)
+          AND (($month = 0 AND $year = 0) OR (date_part('month', ml."date") = $month AND date_part('year', ml."date") = $year))
+    ) as combined
+)
+SELECT
+    @type = 'table',
+    @title = 'Итого для Консоли',
+    $master=>main_name as master_name @{
+        caption = 'Мастер',
+        column_width = 200
+    },
+    $month @{
+        caption = 'Месяц',
+        column_width = 60,
+        text_align = 'center'
+    },
+    $year @{
+        caption = 'Год',
+        column_width = 70,
+        text_align = 'center'
+    },
+    SUM(all_summs.summ) as total @{
+        caption = 'Итого к оплате (Консоль)',
+        number_format = 'ru',
+        column_width = 200
+    }
+FROM all_summs

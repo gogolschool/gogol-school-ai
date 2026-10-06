@@ -1,0 +1,247 @@
+{
+    $start_date date null,
+    $end_date date null,
+    $master reference(base.people) null,
+    $start_year int null,
+    $start_month int null,
+    $start_day int null,
+    $end_year int null,
+    $end_month int null,
+    $end_day int null,
+}:
+WITH all_masters_on_lessons AS (
+    SELECT visits_for_lessons.action,
+           COUNT(visits_for_lessons.id) as cnt
+      FROM crm.visits_for_lessons
+      LEFT JOIN base.people
+             ON people.id = visits_for_lessons.contact
+     WHERE people.is_employee
+       AND visits_for_lessons."datetime" IS NOT NULL
+     GROUP BY visits_for_lessons.action
+), 
+stage_producers_on_lessons AS (
+    SELECT visits_for_lessons.action,
+           COUNT(visits_for_lessons.id) as cnt,
+      FROM crm.actions 
+      LEFT JOIN crm.actions as lessons 
+             ON lessons.parent_action = actions.id
+      LEFT JOIN crm.visits_for_lessons
+             ON visits_for_lessons.action = lessons.id
+      LEFT JOIN base.people
+             ON visits_for_lessons.contact = people.id
+      LEFT JOIN crm.masters_for_actions
+             ON masters_for_actions.action = actions.id
+            AND masters_for_actions.contact = visits_for_lessons.contact
+    WHERE 
+        people.is_employee
+        AND visits_for_lessons."datetime" IS NOT NULL
+        -- Режиссер
+        AND masters_for_actions.is_stage_producer
+    GROUP BY 
+        visits_for_lessons.action
+), masters_on_lessons AS (
+    SELECT 
+        COALESCE(all_masters_on_lessons.cnt, 0) - COALESCE(stage_producers_on_lessons.cnt, 0) as cnt,
+        all_masters_on_lessons.action
+    FROM 
+        all_masters_on_lessons
+            LEFT JOIN stage_producers_on_lessons
+                ON all_masters_on_lessons.action = stage_producers_on_lessons.action
+), 
+AllLessons as (
+SELECT    
+    case when products.topic is null then
+        case when products.training_type is null then
+            case
+                when products.class_category = 4 then
+                    'Актёрский тренинг'
+                when products.class_category = 6 then
+                    'Пластический тренинг'
+                when products.class_category = 8 then
+                    'Речевой тренинг'
+                else
+                    'Творческий тренинг'
+                end
+        else
+            products.training_type=>name
+        end
+    else
+        products.topic
+    end || ' в ' || products.name as name,
+    visits_for_lessons."datetime"::date as event_date @{
+        column_width = 155,
+    },
+    case when visits_for_lessons.hours_manually is null then
+        visits_for_lessons.hours_calculated
+    else 
+        visits_for_lessons.hours_manually
+    end as hours,
+    (CASE 
+        WHEN masters_for_actions.is_stage_producer THEN 0
+        WHEN visits_for_lessons.action=>name IN ('ACT03-2021H1','ACT10-2021H2','ACT03-2022H1') THEN rates_for_masters.rate_for_one 
+        WHEN visits_for_lessons.masters = 1 THEN rates_for_masters.rate_for_one
+        WHEN visits_for_lessons.masters = 2 THEN rates_for_masters.rate_for_two
+        WHEN visits_for_lessons.masters = 3 THEN rates_for_masters.rate_for_three
+        WHEN visits_for_lessons.masters = 4 THEN rates_for_masters.rate_for_four
+        WHEN masters_on_lessons.cnt = 1 THEN rates_for_masters.rate_for_one
+        WHEN masters_on_lessons.cnt = 2 THEN rates_for_masters.rate_for_two
+        WHEN masters_on_lessons.cnt = 3 THEN rates_for_masters.rate_for_three
+        WHEN masters_on_lessons.cnt = 4 THEN rates_for_masters.rate_for_four
+    END) as rate @{
+        caption = 'Ставка',
+        column_width = 70,
+        number_format = 'ru'
+    },
+
+    (CASE 
+        WHEN masters_for_actions.is_stage_producer THEN 0
+        WHEN visits_for_lessons.action=>name IN ('ACT03-2021H1','ACT10-2021H2','ACT03-2022H1') THEN rates_for_masters.rate_for_one
+        WHEN visits_for_lessons.masters = 1 THEN rates_for_masters.rate_for_one
+        WHEN visits_for_lessons.masters = 2 THEN rates_for_masters.rate_for_two
+        WHEN visits_for_lessons.masters = 3 THEN rates_for_masters.rate_for_three
+        WHEN visits_for_lessons.masters = 4 THEN rates_for_masters.rate_for_four
+        WHEN masters_on_lessons.cnt = 1 THEN rates_for_masters.rate_for_one
+        WHEN masters_on_lessons.cnt = 2 THEN rates_for_masters.rate_for_two
+        WHEN masters_on_lessons.cnt = 3 THEN rates_for_masters.rate_for_three
+        WHEN masters_on_lessons.cnt = 4 THEN rates_for_masters.rate_for_four
+    END) * COALESCE(visits_for_lessons.hours_manually, visits_for_lessons.hours_calculated) as summ @{
+        caption = 'Сумма',
+        number_format = 'ru',
+        column_width = 100
+    },
+
+    
+  FROM crm.visits_for_lessons
+
+--Джойн с таблицей людей, чтобы узнать мастер ли он (is_employee)
+  LEFT JOIN base.people
+         ON visits_for_lessons.contact = people.id
+
+    -- Подсчет мастеров на занятии = (ВСЕ ПРИШЕДШИЕ СОТРУДНИКИ) - (ПРИШЕДШИЕ РЕЖИССЕРЫ)
+  LEFT JOIN masters_on_lessons
+         ON masters_on_lessons.action = visits_for_lessons.action
+
+    -- Таблица с занятиями, чтобы сделать джойн с masters_for_actions
+  LEFT JOIN crm.actions as lessons
+         ON visits_for_lessons.action = lessons.id
+
+    -- Таблица с мастерами и режиссерами, чтобы определить режиссеров
+  LEFT JOIN crm.masters_for_actions
+         ON masters_for_actions.action = lessons.parent_action
+        AND masters_for_actions.contact = visits_for_lessons.contact
+
+    -- Таблица с продуктами занятий, чтобы определить тип продукта
+  LEFT JOIN crm.actions as products 
+         ON products.id = lessons.parent_action
+
+    -- Таблица со ставками мастеров
+  LEFT JOIN hrm.rates_for_masters
+         ON rates_for_masters.master = people.id
+        AND rates_for_masters.type = products.class_type
+        AND visits_for_lessons."datetime" >= COALESCE(rates_for_masters.start_date, '2000-01-01'::date)
+        AND visits_for_lessons."datetime" <= COALESCE(rates_for_masters.end_date + '1 day'::interval - '1 minute'::interval, '2100-01-01'::date)
+WHERE people.is_employee
+   AND visits_for_lessons."datetime" IS NOT NULL
+   and ($start_date is null or visits_for_lessons."datetime"::date >= $start_date)
+   and ($end_date is null or visits_for_lessons."datetime"::date < $end_date + '1 day'::interval)
+   and ($start_year is null or $start_month is null or $start_day is null or
+        date_part('year', visits_for_lessons."datetime") > $start_year or 
+        (
+            date_part('year', visits_for_lessons."datetime") = $start_year and
+            (
+                date_part('month', visits_for_lessons."datetime") > $start_month or
+                (
+                    date_part('month', visits_for_lessons."datetime") = $start_month and
+                    date_part('day', visits_for_lessons."datetime") >= $start_day
+                )
+            )
+        )
+   )
+   and ($end_year is null or $end_month is null or $end_day is null or
+        date_part('year', visits_for_lessons."datetime") < $end_year or 
+        (
+            date_part('year', visits_for_lessons."datetime") = $end_year and
+            (
+                date_part('month', visits_for_lessons."datetime") < $end_month or
+                (
+                    date_part('month', visits_for_lessons."datetime") = $end_month and
+                    date_part('day', visits_for_lessons."datetime") <= $end_day
+                )
+            )
+        )
+   )
+   AND ($master IS NULL OR (visits_for_lessons.contact = $master))
+ORDER BY
+    CASE 
+        WHEN $master <> 0 AND $start_date is not null AND $end_date is not null
+        THEN (visits_for_lessons.action=>parent_action=>pay_from)
+    END,
+    visits_for_lessons."datetime" DESC
+),
+AdditionalLessons as (
+    SELECT
+       ml.name,
+       ml."date"::date as event_date,
+       ml.bet as rate,
+       COALESCE(ml.total_hours, ml.price / ml.bet) as hours,
+       ml.price as summ,
+       
+  FROM staffs.masters_additional_lessons as ml 
+  WHERE
+    ml."master" = $master 
+    and ($start_date is null or ml."date"::date >= $start_date)
+    and ($end_date is null or ml."date"::date < $end_date + '1 day'::interval)
+    and ($start_year is null or $start_month is null or $start_day is null or
+            date_part('year', ml."date") > $start_year or 
+            (
+                date_part('year', ml."date") = $start_year and
+                (
+                    date_part('month', ml."date") > $start_month or
+                    (
+                        date_part('month', ml."date") = $start_month and
+                        date_part('day', ml."date") >= $start_day
+                    )
+                )
+            )
+    )
+    and ($end_year is null or $end_month is null or $end_day is null or
+            date_part('year', ml."date") < $end_year or 
+            (
+                date_part('year', ml."date") = $end_year and
+                (
+                    date_part('month', ml."date") < $end_month or
+                    (
+                        date_part('month', ml."date") = $end_month and
+                        date_part('day', ml."date") <= $end_day
+                    )
+                )
+            )
+    )
+),
+Result as (
+SELECT
+    name,
+    event_date,
+    rate,
+    hours,
+    summ,
+from AllLessons
+union all 
+SELECT
+    name,
+    event_date,
+    rate,
+    hours,
+    summ
+from AdditionalLessons
+)
+SELECT
+    @type = 'table',
+    @export_to_csv = true,
+    @title = 'Сумма по всем занятиям за период',
+    SUM(summ) as total_sum @{
+        caption = 'Сумма',
+        number_format = 'ru',
+        column_width = 100
+    }
+from Result

@@ -1,0 +1,224 @@
+{
+    $year int,
+    $month int,
+    $pay_entity enum('ИП', 'ООО'),
+    $staff reference(base.people) null
+}:
+SELECT @title = 'Отчет ЗП сотрудников по договорам ' || $pay_entity || ' за ' || (CASE WHEN COALESCE($month, 0) = 0 AND COALESCE($year, 0) = 0 THEN 'все время' ELSE $month || ' месяц ' || $year || ' год' END),
+       sc.staff as staff @{
+           caption = 'Мастер',
+           link = &base.person_form
+       },
+       ml.work_entity @{
+           caption = 'Род занятости',
+           column_width = 120
+       },
+       ml.number @{
+           caption = 'Номер договора',
+           column_width = 120
+       },
+       ml.date_from @{
+           caption = 'Дата договора',
+           column_width = 120
+       }, 
+       ml.summ as summ @{            
+           caption = 'Сумма',            
+           number_format = 'ru',            
+           column_width = 100        
+       },  
+       sc.comment @{
+           caption = 'Комментарий к договору',
+           column_width = 250,
+           text_type = 'multiline'
+       },
+       sc.cheque @{
+           caption = 'Чеки',
+           text_type = 'multiline'
+       },
+       sc.url,
+       ml.contract,
+       ml.did
+  FROM(SELECT ml.id as "contract",
+       d.work_entity,
+       ml.number,
+       ml.date_from, 
+       SUM(summ) as summ,  
+       ml.comment,
+       ml.cheque,
+       ml.url,
+       d.id as did
+  FROM docs.staff_contracts as ml 
+  LEFT JOIN (SELECT sc.id,
+                    vl.action=>parent_action=>pay_from || '' as pay_from,            
+                    vl.contact, 
+                    people.work_entity,           
+                    vl."datetime",            
+                    vl.datetime_end,            
+                    vl.hours,            
+                    vl.hours_manually as h,  
+                              
+                    case when vl.rate_manually is null then   
+                    (CASE 
+                        WHEN masters_for_actions.is_stage_producer THEN 0
+                        WHEN vl.action=>name  IN ('ACT03-2021H1','ACT10-2021H2','ACT03-2022H1') THEN rates_for_masters.rate_for_one
+                        WHEN vl.masters = 1 THEN rates_for_masters.rate_for_one
+                        WHEN vl.masters = 2 THEN rates_for_masters.rate_for_two
+                        WHEN vl.masters = 3 THEN rates_for_masters.rate_for_three
+                        WHEN vl.masters >= 4 THEN rates_for_masters.rate_for_four
+                        WHEN masters_visits.masters_count = 1 THEN rates_for_masters.rate_for_one
+                        WHEN masters_visits.masters_count = 2 THEN rates_for_masters.rate_for_two
+                        WHEN masters_visits.masters_count = 3 THEN rates_for_masters.rate_for_three
+                        WHEN masters_visits.masters_count >= 4 THEN rates_for_masters.rate_for_four
+                    END)
+                else 
+                    vl.rate_manually
+                end as rate,            
+                (case when vl.rate_manually is null then
+                    CASE 
+                        WHEN masters_for_actions.is_stage_producer THEN 0
+                        WHEN vl.action=>name  IN ('ACT03-2021H1','ACT10-2021H2','ACT03-2022H1') THEN rates_for_masters.rate_for_one
+                        WHEN vl.masters = 1 THEN rates_for_masters.rate_for_one
+                        WHEN vl.masters = 2 THEN rates_for_masters.rate_for_two
+                        WHEN vl.masters = 3 THEN rates_for_masters.rate_for_three
+                        WHEN vl.masters >= 4 THEN rates_for_masters.rate_for_four
+                        WHEN masters_visits.masters_count = 1 THEN rates_for_masters.rate_for_one
+                        WHEN masters_visits.masters_count = 2 THEN rates_for_masters.rate_for_two
+                        WHEN masters_visits.masters_count = 3 THEN rates_for_masters.rate_for_three
+                        WHEN masters_visits.masters_count >= 4 THEN rates_for_masters.rate_for_four
+                    END
+                else
+                    vl.rate_manually
+                end) * COALESCE(vl.hours_manually, vl.hours_calculated) as summ        
+               FROM crm.visits_for_lessons AS vl
+
+                    --Джойн с таблицей людей, чтобы узнать мастер ли он (is_employee)
+               LEFT JOIN base.people
+                      ON vl.contact = people.id
+                    -- Подсчет мастеров на занятии = (ВСЕ ПРИШЕДШИЕ СОТРУДНИКИ) - (ПРИШЕДШИЕ РЕЖИССЕРЫ)
+               LEFT JOIN (SELECT COALESCE(all_masters.cnt, 0) - COALESCE(stage_producers.cnt, 0) as masters_count,
+                                 all_masters.action
+                            FROM (
+                                    (
+                                        SELECT 
+                                            visits_for_lessons.action,
+                                            COUNT(visits_for_lessons.id) as cnt
+                                        FROM 
+                                            crm.visits_for_lessons
+                                                LEFT JOIN base.people
+                                                ON people.id = visits_for_lessons.contact
+                                        WHERE 
+                                            people.is_employee
+                                            AND visits_for_lessons."datetime" IS NOT NULL
+                                        GROUP BY
+                                            visits_for_lessons.action
+                                    ) as all_masters
+                            LEFT JOIN 
+                            (
+                                SELECT
+                                    visits_for_lessons.action,
+                                    COUNT(visits_for_lessons.id) as cnt,
+                                FROM 
+                                    crm.actions 
+                                LEFT JOIN crm.actions as lessons 
+                                       ON lessons.parent_action = actions.id
+                                LEFT JOIN crm.visits_for_lessons
+                                       ON visits_for_lessons.action = lessons.id
+                                LEFT JOIN base.people
+                                       ON visits_for_lessons.contact = people.id
+                                LEFT JOIN crm.masters_for_actions
+                                       ON masters_for_actions.action = actions.id
+                                      AND masters_for_actions.contact = visits_for_lessons.contact
+                                WHERE 
+                                    people.is_employee
+                                    AND visits_for_lessons."datetime" IS NOT NULL
+                                    -- Режиссер
+                                    AND masters_for_actions.is_stage_producer
+                                GROUP BY 
+                                    visits_for_lessons.action
+                            ) as stage_producers
+                                ON 
+                                    all_masters.action = stage_producers.action 
+                        )       
+                    ) as masters_visits
+                        ON masters_visits.action = vl.action
+
+               -- Таблица с занятиями, чтобы сделать джойн с masters_for_actions
+               LEFT JOIN crm.actions as lessons
+                      ON vl.action = lessons.id
+
+               -- Таблица с мастерами и режиссерами, чтобы определить режиссеров
+               LEFT JOIN crm.masters_for_actions
+                      ON masters_for_actions.action = lessons.parent_action
+                     AND masters_for_actions.contact = vl.contact
+
+                        -- Таблица с продуктами занятий, чтобы определить тип продукта
+               LEFT JOIN crm.actions as products 
+                      ON products.id = lessons.parent_action
+
+                -- Таблица со ставками мастеров
+               LEFT JOIN hrm.rates_for_masters
+                      ON rates_for_masters.master = people.id
+                     AND rates_for_masters.type = products.class_type
+                     AND vl."datetime" >= COALESCE(rates_for_masters.start_date, '2000-01-01'::date)
+                     AND vl."datetime" <= COALESCE(rates_for_masters.end_date + '1 day'::interval - '1 minute'::interval, '2100-01-01'::date)  
+               LEFT JOIN LATERAL(SELECT sc.id,
+                                        sc.__main as "name"
+                                   FROM docs.staff_contracts as sc 
+                                  WHERE sc.is_main    = true
+                                    AND sc.staff      = vl.contact
+                                    AND sc.pay_entity = products.pay_from
+                                    AND sc.date_from <= vl."datetime"::date
+                                    AND sc.date_to   >= vl."datetime"::date
+                                  LIMIT 1) as sc ON true
+              WHERE people.is_employee            
+                AND vl."datetime" IS NOT NULL    
+                AND products.pay_from = $pay_entity
+                AND (($month = 0 AND $year = 0 ) OR 
+                    (date_part('month',vl."datetime") = $month             
+                    AND date_part('year', vl."datetime") = $year))            
+                AND (($staff IS NULL) OR (vl.contact = $staff))
+            UNION
+            SELECT ml."contract",
+                   ml."contract"=>pay_entity::string as pay_from,
+                   ml."master" as "contact",
+                   ml.contract=>work_entity,
+                   ml."date" as "datetime",
+                   ml."date" as "datetime_end",
+                   '0 seconds'::interval,
+                   ml."hours" as h,
+                   0 as rate,
+                   ml.price as summ
+              FROM staffs.masters_additional_lessons as ml
+              LEFT JOIN docs.staff_contracts as sc 
+                     ON sc.id = ml."contract"
+             WHERE (($staff IS NULL) OR (ml."master" = $staff))
+               AND (($month = 0 AND $year = 0 ) OR 
+                    (date_part('month',ml."date") = $month             
+                    AND date_part('year', ml."date") = $year))
+               AND sc.pay_entity = $pay_entity
+            ) as d
+         ON d.contact = ml.staff
+        AND d.id      = ml.id
+        AND (($month = 0 AND $year = 0)
+            OR (date_part('month',d."datetime") = $month
+            AND date_part('year', d."datetime") = $year))
+ WHERE ($staff IS NULL OR (ml.staff = $staff))
+   AND (($month = 0 AND $year = 0)
+        OR ((date_part('year', ml."date_from") < $year OR (date_part('year', ml."date_from") = $year
+          AND date_part('month', ml."date_from") <= $month)
+        AND date_part('year', ml."date_to") > $year OR (date_part('year', ml."date_to") = $year
+          AND date_part('month', ml."date_to") >= $month)))
+   )
+   AND d.pay_from = ml.pay_entity
+ GROUP BY ml.id,
+          d.work_entity,
+          ml.number,
+          ml.date_from,
+          ml.comment,
+          ml.cheque,
+          ml.url,
+          d.id) as ml
+  LEFT JOIN docs.staff_contracts as sc 
+         ON sc.id = ml."contract"
+ ORDER BY sc.staff=>__main,
+          ml.date_from desc

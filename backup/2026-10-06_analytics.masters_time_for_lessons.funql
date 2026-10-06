@@ -1,0 +1,248 @@
+{
+    $month int,
+    $year int,
+    $master reference(base.people) null
+}:
+WITH all_masters_on_lessons AS (
+    SELECT visits_for_lessons.action,
+           COUNT(visits_for_lessons.id) as cnt
+      FROM crm.visits_for_lessons
+      LEFT JOIN base.people
+             ON people.id = visits_for_lessons.contact
+    left join 
+        crm.actions 
+            on crm.actions.id = visits_for_lessons.action
+     WHERE people.is_employee 
+                -- and (select count(crm.masters_for_actions.id)
+                --     from crm.masters_for_actions 
+                --     where (crm.masters_for_actions.action = visits_for_lessons.action 
+                --         or (crm.masters_for_actions.action = crm.actions.parent_action 
+                --                 and crm.actions.parent_action is not null)
+                --     )
+                --     and crm.masters_for_actions.contact = people.id) != 0
+       AND visits_for_lessons."datetime" IS NOT NULL
+     GROUP BY visits_for_lessons.action
+), 
+stage_producers_on_lessons AS (
+    SELECT visits_for_lessons.action,
+           COUNT(visits_for_lessons.id) as cnt,
+      FROM crm.actions 
+      LEFT JOIN crm.actions as lessons 
+             ON lessons.parent_action = actions.id
+      LEFT JOIN crm.visits_for_lessons
+             ON visits_for_lessons.action = lessons.id
+      LEFT JOIN base.people
+             ON visits_for_lessons.contact = people.id
+      LEFT JOIN crm.masters_for_actions
+             ON masters_for_actions.action = actions.id
+            AND masters_for_actions.contact = visits_for_lessons.contact
+    WHERE 
+        people.is_employee
+        AND visits_for_lessons."datetime" IS NOT NULL
+        -- Режиссер
+        AND masters_for_actions.is_stage_producer
+    GROUP BY 
+        visits_for_lessons.action
+), masters_on_lessons AS (
+    SELECT 
+        COALESCE(all_masters_on_lessons.cnt, 0) - COALESCE(stage_producers_on_lessons.cnt, 0) as cnt,
+        all_masters_on_lessons.action
+    FROM 
+        all_masters_on_lessons
+            LEFT JOIN stage_producers_on_lessons
+                ON all_masters_on_lessons.action = stage_producers_on_lessons.action
+)
+SELECT
+    @type = 'table',
+    @export_to_csv = true,
+    @row_link = &crm.visits_for_lessons_form,
+    @title = 'Мастера: дата и время прихода. Период: ' || (CASE WHEN $month = 0 AND $year = 0 THEN 'Все время' ELSE $month || ' месяц ' || $year || ' год' END),
+    @cell_color = case 
+        when masters_for_actions.is_stage_producer
+        then '#F4F4F4'
+    end,
+    -- У B2B-занятий нет action_datetime → full_name (дата-название) = NULL и Озма показывает id; берём name
+    COALESCE(visits_for_lessons.action=>full_name, visits_for_lessons.action=>name) as action @{
+        caption = 'Занятие',
+        link = { ref: &crm.lesson_form, args: { id: visits_for_lessons.action } },
+        column_width = 250
+    },
+    -- visits_for_lessons.masters,
+    CASE 
+        WHEN masters_for_actions.is_stage_producer
+        THEN null
+        WHEN visits_for_lessons.masters IS NULL 
+        THEN masters_on_lessons.cnt
+        ELSE visits_for_lessons.masters 
+    END as masters_count @{
+        caption = 'Мастера',
+        column_width = 70,
+        text_align = 'center',
+        cell_color = 
+        CASE 
+            WHEN masters_for_actions.is_stage_producer
+                THEN '#F4F4F4'
+            WHEN visits_for_lessons.action=>name IN ('ACT03-2021H1','ACT10-2021H2','ACT03-2022H1') 
+                THEN '#F4F4F4'
+            WHEN visits_for_lessons.masters IS NOT NULL 
+                THEN '#E7EBF3'
+            ELSE 'white' 
+        END
+    },
+    masters_for_actions.is_stage_producer @{
+        caption = 'Реж.',
+        column_width = 50,
+        visible = false
+    },
+    visits_for_lessons.action=>parent_action=>pay_from || '' as pay_from @{
+        column_width = 75,
+        caption = 'Оплата от',
+        text_align = 'center'
+    },
+    visits_for_lessons.contact @{
+        caption = 'Мастер',
+        link = &base.person_form,
+        column_width = 175
+    },
+    visits_for_lessons."datetime" @{
+        column_width = 155,
+        cell_color = CASE 
+            when masters_for_actions.is_stage_producer
+            then '#F4F4F4'
+            WHEN visits_for_lessons.masters IS NOT NULL 
+            THEN '#E7EBF3'
+            ELSE 'white' END
+    },
+    visits_for_lessons.datetime_end @{
+        column_width = 155,
+        cell_color = CASE 
+            when masters_for_actions.is_stage_producer
+            then '#F4F4F4'
+            WHEN visits_for_lessons.masters IS NOT NULL 
+            THEN '#E7EBF3'
+            ELSE 'white' END
+    },
+    (
+        to_char(visits_for_lessons."datetime" + '3 hours'::interval, 'DD.MM.YYYY HH24:MI') || ' - ' || to_char(visits_for_lessons.datetime_end + '3 hours'::interval, 'HH24:MI')
+    ) as date_range @{
+        caption = 'Время занятия',
+    },
+    visits_for_lessons.hours::string as hours @{
+        column_width = 75,
+        caption = 'Часы'
+    },
+    visits_for_lessons.hours_manually @{
+        column_width = 80,
+        text_align = 'center',
+        caption = 'Корректировка (часы)',
+        cell_color = CASE 
+            when masters_for_actions.is_stage_producer
+            then '#F4F4F4'
+            WHEN hours_manually IS NOT NULL THEN '#DDEBD6' 
+        END
+    },
+    (CASE 
+        WHEN masters_for_actions.is_stage_producer THEN 0
+        WHEN visits_for_lessons.action=>name IN ('ACT03-2021H1','ACT10-2021H2','ACT03-2022H1') THEN rates_for_masters.rate_for_one 
+        WHEN visits_for_lessons.masters = 1 THEN rates_for_masters.rate_for_one
+        WHEN visits_for_lessons.masters = 2 THEN rates_for_masters.rate_for_two
+        WHEN visits_for_lessons.masters = 3 THEN rates_for_masters.rate_for_three
+        WHEN visits_for_lessons.masters >= 4 THEN rates_for_masters.rate_for_four
+        WHEN masters_on_lessons.cnt = 1 THEN rates_for_masters.rate_for_one
+        WHEN masters_on_lessons.cnt = 2 THEN rates_for_masters.rate_for_two
+        WHEN masters_on_lessons.cnt = 3 THEN rates_for_masters.rate_for_three
+        WHEN masters_on_lessons.cnt >= 4 THEN rates_for_masters.rate_for_four
+    END) as rate @{
+        caption = 'Ставка',
+        column_width = 70,
+        number_format = 'ru'
+    },
+    visits_for_lessons.rate_manually @{
+        column_width = 80,
+        text_align = 'center',
+        caption = 'Корректировка (ставка)',
+        -- visible = $$user_id=>name = 'bella.fatt@gogol.school',
+        cell_color = CASE 
+            when masters_for_actions.is_stage_producer
+            then '#F4F4F4'
+            WHEN rate_manually IS NOT NULL THEN '#DDEBD6' 
+        END
+    },
+    visits_for_lessons.hours_calculated @{
+        column_width = 90,
+        text_align = 'center',
+        caption = 'Расчёт (часы)',
+        cell_color = CASE 
+            when masters_for_actions.is_stage_producer
+            then '#F4F4F4'
+            WHEN hours_manually IS NULL THEN '#DDEBD6' 
+        END
+    },
+    calc_visit_payout(visits_for_lessons.id) as summ @{
+        caption = 'Сумма',
+        number_format = 'ru',
+        column_width = 100
+    },
+
+    
+  FROM crm.visits_for_lessons
+
+--Джойн с таблицей людей, чтобы узнать мастер ли он (is_employee)
+  LEFT JOIN base.people
+         ON visits_for_lessons.contact = people.id
+
+    -- Подсчет мастеров на занятии = (ВСЕ ПРИШЕДШИЕ СОТРУДНИКИ) - (ПРИШЕДШИЕ РЕЖИССЕРЫ)
+  LEFT JOIN masters_on_lessons
+         ON masters_on_lessons.action = visits_for_lessons.action
+
+    -- Таблица с занятиями, чтобы сделать джойн с masters_for_actions
+  LEFT JOIN crm.actions as lessons
+         ON visits_for_lessons.action = lessons.id
+
+    -- Таблица с мастерами и режиссерами, чтобы определить режиссеров
+  LEFT JOIN crm.masters_for_actions
+         ON masters_for_actions.action = lessons.parent_action
+        AND masters_for_actions.contact = visits_for_lessons.contact
+
+    -- Таблица с продуктами занятий, чтобы определить тип продукта
+  LEFT JOIN crm.actions as products 
+         ON products.id = lessons.parent_action
+
+    -- Таблица со ставками мастеров
+  LEFT JOIN hrm.rates_for_masters
+         ON rates_for_masters.master = people.id
+        AND rates_for_masters.type = products.class_type
+        AND visits_for_lessons."datetime" >= COALESCE(rates_for_masters.start_date, '2000-01-01'::date)
+        AND visits_for_lessons."datetime" <= COALESCE(rates_for_masters.end_date + '1 day'::interval - '1 minute'::interval, '2100-01-01'::date)
+
+    -- B2B-ставка мастера (class_type = 23 'B2B'); для B2B-занятий не зависит от class_type продукта
+  LEFT JOIN hrm.rates_for_masters AS b2b_rates
+         ON b2b_rates.master = people.id
+        AND b2b_rates.type = 23
+        AND visits_for_lessons."datetime" >= COALESCE(b2b_rates.start_date, '2000-01-01'::date)
+        AND visits_for_lessons."datetime" <= COALESCE(b2b_rates.end_date + '1 day'::interval - '1 minute'::interval, '2100-01-01'::date)
+
+    -- Константы оплаты B2B из справочника fin.payroll_constants (Справочники → Финансы)
+  LEFT JOIN fin.payroll_constants AS cfg_dev
+         ON cfg_dev.code_name = 'b2b_dev_rate_per_hour'
+  LEFT JOIN fin.payroll_constants AS cfg_pct
+         ON cfg_pct.code_name = 'b2b_sales_percent'
+ WHERE people.is_employee
+    -- and (select count(crm.masters_for_actions.id)
+    --                 from crm.masters_for_actions 
+    --                 where (crm.masters_for_actions.action = visits_for_lessons.action 
+    --                     or (crm.masters_for_actions.action = lessons.parent_action 
+    --                             and lessons.parent_action is not null)
+    --                 )
+    --                 and crm.masters_for_actions.contact = people.id) != 0
+   AND visits_for_lessons."datetime" IS NOT NULL
+   AND (($month = 0 AND $year = 0 ) OR 
+       (date_part('month',visits_for_lessons."datetime") = $month 
+   AND date_part('year', visits_for_lessons."datetime") = $year))
+   AND ($master IS NULL OR (visits_for_lessons.contact = $master))
+ ORDER BY
+    CASE 
+        WHEN $master <> 0 AND $month <> 0 AND $year <> 0
+        THEN (visits_for_lessons.action=>parent_action=>pay_from)
+    END,
+    visits_for_lessons."datetime" DESC

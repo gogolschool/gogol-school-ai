@@ -1,0 +1,173 @@
+{
+    $contract reference(docs.staff_contracts) null @{
+      caption = 'Контракт'
+    }
+}:
+SELECT
+    @type = 'table',
+    @title = 'Все акты для контрактов',
+    @create_link = &docs.staff_act_form,
+    id @{ 
+      row_link = &docs.staff_act_form,
+      visible = false  
+    },
+    request_number @{
+
+    },
+    request_date @{
+        
+    },
+    act_number,
+    act_date,
+    amount @{
+        number_format = 'ru',
+    },
+
+    ---- ниже дофига кода для расчета суммы по всем занятиям и доп.занятиям/работам для мастера
+    (
+            WITH AllLessons as (
+            SELECT    
+                case when products.topic is null then
+                    case when products.training_type is null then
+                        case
+                            when products.class_category = 4 then
+                                'Актёрский тренинг'
+                            when products.class_category = 6 then
+                                'Пластический тренинг'
+                            when products.class_category = 8 then
+                                'Речевой тренинг'
+                            else
+                                'Творческий тренинг'
+                            end
+                    else
+                        products.training_type=>name
+                    end
+                else
+                    products.topic
+                end || ' в ' || products.name as name,
+                visits_for_lessons."datetime"::date as event_date,
+                case when visits_for_lessons.hours_manually is null then
+                    visits_for_lessons.hours_calculated
+                else 
+                    visits_for_lessons.hours_manually
+                end as hours,
+                (CASE
+                    WHEN COALESCE(visits_for_lessons.hours_manually, visits_for_lessons.hours_calculated) > 0
+                    THEN calc_visit_payout(visits_for_lessons.id) / COALESCE(visits_for_lessons.hours_manually, visits_for_lessons.hours_calculated)
+                END) as rate,
+
+                calc_visit_payout(visits_for_lessons.id) as summ,
+
+                
+              FROM crm.visits_for_lessons
+
+            --Джойн с таблицей людей, чтобы узнать мастер ли он (is_employee)
+              LEFT JOIN base.people
+                    ON visits_for_lessons.contact = people.id
+
+                -- Таблица с занятиями, чтобы сделать джойн с masters_for_actions
+              LEFT JOIN crm.actions as lessons
+                    ON visits_for_lessons.action = lessons.id
+
+                -- Таблица с продуктами занятий, чтобы определить тип продукта
+              LEFT JOIN crm.actions as products 
+                    ON products.id = lessons.parent_action
+
+            WHERE people.is_employee
+              AND visits_for_lessons."datetime" IS NOT NULL
+              and (
+                    (
+                        docs.staff_acts.start_date is null and 
+                        date_part('year', visits_for_lessons."datetime") = date_part('year', docs.staff_acts.act_date) and
+                        date_part('month', visits_for_lessons."datetime") = date_part('month', docs.staff_acts.act_date)
+                    )
+                    or visits_for_lessons."datetime"::date >= docs.staff_acts.start_date)
+              and (docs.staff_acts.end_date is null or visits_for_lessons."datetime"::date < docs.staff_acts.end_date + '1 day'::interval)
+              
+              AND (visits_for_lessons.contact = $contract=>staff)
+            ORDER BY
+                CASE 
+                    WHEN $contract=>staff is not null AND docs.staff_acts.start_date is not null AND docs.staff_acts.end_date is not null
+                    THEN (visits_for_lessons.action=>parent_action=>pay_from)
+                END,
+                visits_for_lessons."datetime" DESC
+            ),
+            AdditionalLessons as (
+                SELECT
+                  ml.name,
+                  ml."date"::date as event_date,
+                  ml.bet as rate,
+                  COALESCE(ml.total_hours, ml.price / ml.bet) as hours,
+                  ml.price as summ,
+                  
+              FROM staffs.masters_additional_lessons as ml 
+              WHERE
+                ml."master" = $contract=>staff 
+                and (
+                        (
+                            docs.staff_acts.start_date is null and
+                            date_part('year', ml."date") = date_part('year', docs.staff_acts.act_date) and
+                            date_part('month', ml."date") = date_part('month', docs.staff_acts.act_date)
+                        )
+                        or ml."date"::date >= docs.staff_acts.start_date)
+                and (docs.staff_acts.end_date is null or ml."date"::date < docs.staff_acts.end_date + '1 day'::interval)
+            ),
+            Result as (
+            SELECT
+                name,
+                event_date,
+                rate,
+                hours,
+                summ,
+            from AllLessons
+            union all 
+            SELECT
+                name,
+                event_date,
+                rate,
+                hours,
+                summ
+            from AdditionalLessons
+            )
+            SELECT
+                SUM(summ) as total_sum
+            from Result
+    ) as calculated_amount @{
+        number_format = 'ru',
+        caption = 'Сумма по расчету'  
+    },
+    start_date,
+    end_date,
+    status,
+    contract @{
+      link = &docs.staff_contract_form,
+      visible = $contract is null,
+      default_value = $contract
+    },
+     [{
+        caption: 'Акт',
+        icon: 'print',
+        document_template: {
+          schema: 'docs',
+          name: 'staff_act',
+        },
+        filename: 'Act-'|| act_number || '.odt',
+        args: {
+          id: id,
+          start_year: date_part('year', COALESCE(start_date, act_date)),
+          start_month: date_part('month', COALESCE(start_date, act_date)),
+          start_day: date_part('day', start_date),
+          end_year: date_part('year', COALESCE(end_date, act_date)),
+          end_month: date_part('month', COALESCE(end_date, act_date)),
+          end_day: date_part('day', end_date),
+          master: contract=>staff,
+        },
+    }] as print_act @{
+        column_type = 'buttons',
+        caption = 'Печать акта'
+    },
+FROM docs.staff_acts
+WHERE 
+  $contract is null or (contract = $contract)
+ORDER BY request_number,id 
+FOR INSERT INTO docs.staff_acts

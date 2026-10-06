@@ -1,0 +1,92 @@
+{
+    $month int,
+    $year int,
+    $master reference(base.people) null
+}:
+WITH all_masters_on_lessons AS (
+    SELECT visits_for_lessons.action, COUNT(visits_for_lessons.id) as cnt
+    FROM crm.visits_for_lessons
+    LEFT JOIN base.people ON people.id = visits_for_lessons.contact
+    LEFT JOIN crm.actions ON crm.actions.id = visits_for_lessons.action
+    WHERE people.is_employee AND visits_for_lessons."datetime" IS NOT NULL
+    GROUP BY visits_for_lessons.action
+),
+stage_producers_on_lessons AS (
+    SELECT visits_for_lessons.action, COUNT(visits_for_lessons.id) as cnt,
+    FROM crm.actions
+    LEFT JOIN crm.actions as lessons ON lessons.parent_action = actions.id
+    LEFT JOIN crm.visits_for_lessons ON visits_for_lessons.action = lessons.id
+    LEFT JOIN base.people ON visits_for_lessons.contact = people.id
+    LEFT JOIN crm.masters_for_actions ON masters_for_actions.action = actions.id AND masters_for_actions.contact = visits_for_lessons.contact
+    WHERE people.is_employee AND visits_for_lessons."datetime" IS NOT NULL AND masters_for_actions.is_stage_producer
+    GROUP BY visits_for_lessons.action
+),
+masters_on_lessons AS (
+    SELECT COALESCE(all_masters_on_lessons.cnt, 0) - COALESCE(stage_producers_on_lessons.cnt, 0) as cnt, all_masters_on_lessons.action
+    FROM all_masters_on_lessons LEFT JOIN stage_producers_on_lessons ON all_masters_on_lessons.action = stage_producers_on_lessons.action
+),
+all_summs AS (
+    SELECT summ FROM (
+        SELECT
+            vfl.action as action_id,
+            SUM(
+                CASE WHEN vfl.rate_manually IS NULL THEN
+                    CASE
+                        WHEN mfa.is_stage_producer THEN 0
+                        WHEN vfl.masters = 1 THEN rfm.rate_for_one
+                        WHEN vfl.masters = 2 THEN rfm.rate_for_two
+                        WHEN vfl.masters = 3 THEN rfm.rate_for_three
+                        WHEN vfl.masters >= 4 THEN rfm.rate_for_four
+                        WHEN mol.cnt = 1 THEN rfm.rate_for_one
+                        WHEN mol.cnt = 2 THEN rfm.rate_for_two
+                        WHEN mol.cnt = 3 THEN rfm.rate_for_three
+                        WHEN mol.cnt >= 4 THEN rfm.rate_for_four
+                        ELSE 0
+                    END
+                ELSE vfl.rate_manually END
+                * COALESCE(vfl.hours_manually, vfl.hours_calculated)
+            ) as summ
+        FROM crm.visits_for_lessons as vfl
+        LEFT JOIN base.people as p ON vfl.contact = p.id
+        LEFT JOIN masters_on_lessons as mol ON mol.action = vfl.action
+        LEFT JOIN crm.actions as les ON vfl.action = les.id
+        LEFT JOIN crm.masters_for_actions as mfa ON mfa.action = les.parent_action AND mfa.contact = vfl.contact
+        LEFT JOIN crm.actions as prod ON prod.id = les.parent_action
+        LEFT JOIN hrm.rates_for_masters as rfm ON rfm.master = p.id AND rfm.type = prod.class_type
+            AND vfl."datetime" >= COALESCE(rfm.start_date, '2000-01-01'::date)
+            AND vfl."datetime" <= COALESCE(rfm.end_date + '1 day'::interval - '1 minute'::interval, '2100-01-01'::date)
+        WHERE p.is_employee AND vfl."datetime" IS NOT NULL
+          AND (($month = 0 AND $year = 0) OR (date_part('month', vfl."datetime") = $month AND date_part('year', vfl."datetime") = $year))
+          AND ($master IS NULL OR vfl.contact = $master)
+          AND NOT mfa.is_stage_producer
+        GROUP BY vfl.action
+        UNION ALL
+        SELECT null as action_id, ml.price as summ
+        FROM staffs.masters_additional_lessons as ml
+        WHERE ($master IS NULL OR ml.master = $master)
+          AND (($month = 0 AND $year = 0) OR (date_part('month', ml."date") = $month AND date_part('year', ml."date") = $year))
+    ) as combined
+)
+SELECT
+    @type = 'table',
+    @title = 'Итого для Консоли',
+    $master=>main_name as master_name @{
+        caption = 'Мастер',
+        column_width = 200
+    },
+    $month @{
+        caption = 'Месяц',
+        column_width = 60,
+        text_align = 'center'
+    },
+    $year @{
+        caption = 'Год',
+        column_width = 70,
+        text_align = 'center'
+    },
+    SUM(all_summs.summ) as total @{
+        caption = 'Итого к оплате (Консоль)',
+        number_format = 'ru',
+        column_width = 200
+    }
+FROM all_summs
