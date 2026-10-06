@@ -1,0 +1,148 @@
+{
+    $account reference(fin.accounts) null @{
+        caption = 'Счет'
+    },
+    $year int null @{
+        caption = 'Год'
+    },
+    $month int null @{
+        caption = 'Месяц'
+    },
+    $class_type reference(crm.class_type) null @{
+        caption = 'Категория'
+    }
+}:
+SELECT @type = 'table',
+       @title = 'Экономика',
+       @export_to_csv = true,
+    -- @create_link = &fin.transaction_form,
+    -- @row_link = &fin.transaction_form,
+       @lazy_load = { pagination: {per_page: 150}},
+       @show_argument_editor = true,
+       (CASE 
+           WHEN account_to=>contractor=>is_our_organization THEN "amount"
+           WHEN account_from=>contractor=>is_our_organization THEN -1 * "amount"
+       END) as amount @{
+           number_format = 'ru',
+           caption = 'Сумма',
+           column_width = 100,
+           cell_color = case
+               when account_from=>contractor=>is_our_organization = true
+               then '#FDEBEC'
+               else '#EAF7EE'
+           end,
+       },
+       (CASE WHEN "account_from"=>name = 'Tinkoff ООО эквайринг' OR "account_to"=>name = 'Tinkoff ООО эквайринг'THEN 'Tinkoff' 
+           WHEN "account_from"=>name = 'ООО' OR "account_to"=>name = 'ООО'THEN 'ООО'
+           WHEN "account_from"=>name = 'Касса ООО' OR "account_to"=>name = 'Касса ООО'THEN 'Касса ООО'
+           WHEN "account_from"=>name = 'Tinkoff ИП' OR "account_to"=>name = 'Tinkoff ИП'THEN 'Tinkoff ИП'
+           WHEN "account_from"=>name = 'СБЕР' OR "account_to"=>name = 'СБЕР'THEN 'СБЕР'
+           WHEN "account_from"=>name = 'Касса ИП' OR "account_to"=>name = 'Касса ИП' THEN 'Касса ИП'
+           WHEN "account_from"=>name = 'ООО кредит' OR "account_to"=>name = 'ООО кредит' THEN 'Рассрочка'
+       END) as acc @{
+           caption = 'Счет'
+       }, 
+    -- "account_from" @{
+    --     select_view = {
+    --         ref: &fin.account_form,
+    --         new: true
+    --     },
+    --     link = &fin.account_form
+    -- },
+    -- "account_to" @{
+    --     select_view = {
+    --         ref: &fin.account_form,
+    --         new: true
+    --     },
+    --     link = &fin.account_form
+    -- },
+       "transaction_date" as transaction_date @{
+           column_width = 100,
+           caption = 'Дата'
+       },
+       ('Фатт Бэлла') as FIO @{
+           column_width = 100,
+           caption = 'Кто провел'
+       },
+       ("request"=>__main) as request @{
+           column_width = 275,
+           caption = 'Комментарий'
+       },
+        (case when 
+            ct.name = 'HEAD' or ct.name = 'ОУ HEAD' then
+                'B2С TOP'
+            else
+                'B2C'
+            end
+        ) as stream @{
+           column_width = 100,
+           caption = 'Направление'
+       },
+       ('') as Marketing @{
+           column_width = 10,
+           caption = 'Маркетинг'
+       },
+       (CASE WHEN action=>class_type=>name = 'Интенсив' THEN 'Интенсивы'
+       WHEN action=>class_type=>name = 'Открытый урок' THEN 'Открытый урок'
+           WHEN action=>class_type=>name = 'Лаборатория' THEN 'Лаборатории'
+           WHEN action=>class_type=>name = 'HEAD' THEN 'GS Head'
+           WHEN action=>class_type=>name = 'Товар' THEN 'Мерч'
+           WHEN action=>class_type=>name = 'Сертификат' THEN 'Интенсивы'
+           WHEN action=>class_type=>name = 'Интенсив СПБ' THEN 'Санкт-Петербург'
+           WHEN action=>class_type=>name = 'МК СПБ' THEN 'Санкт-Петербург'
+           WHEN action=>class_type=>name = 'Абонемент' THEN 'Абонементы'
+       END) as class_type @{
+           caption = 'Связано с проектом'
+       },
+             (CASE 
+           WHEN account_to=>contractor=>is_our_organization THEN 'Поступление'
+           WHEN account_from=>contractor=>is_our_organization THEN 'Возврат'
+       END) as line @{
+           caption = 'Статья'
+       },
+       ('- | -') as of_staff @{
+           column_width = 100,
+           caption = 'Связано с сотрудником'
+       },
+       (CASE 
+           WHEN account_to=>contractor=>is_our_organization THEN account_from=>contractor=>main_name
+           WHEN account_from=>contractor=>is_our_organization THEN account_to=>contractor=>main_name
+       END) as "account_from_main_name" @{
+           caption = 'ФИО',
+           cell_color = '#deeaee',
+       },
+       action=>project @{
+       },
+       (to_char(transaction_date, 'mm')) as mm @{
+           caption = 'Месяц',
+           column_width = 80,
+       },
+       (to_char(transaction_date, 'yyyy')) as yyyy @{
+           caption = 'Год',
+           column_width = 80,
+       }, 
+  FROM fin.transactions 
+  LEFT JOIN crm.actions as a 
+         ON a.id = transactions.action
+  LEFT JOIN crm.class_type as ct 
+         ON ct.id = a.class_type
+ WHERE transactions.tks_state IN ('CONFIRMED', 'AUTHORIZED', 'PARTIAL_REFUNDED', 'REFUNDED')
+--    AND (ct.name IN ('Интенсив', 'Лаборатория', 'HEAD'))
+   AND (CASE WHEN "account_from"=>name = 'Tinkoff ООО эквайринг' OR "account_to"=>name = 'Tinkoff ООО эквайринг'THEN true 
+           WHEN "account_from"=>name = 'ООО' OR "account_to"=>name = 'ООО'THEN true
+           WHEN "account_from"=>name = 'Касса ООО' OR "account_to"=>name = 'Касса ООО'THEN true
+           WHEN "account_from"=>name = 'Tinkoff ИП' OR "account_to"=>name = 'Tinkoff ИП'THEN true
+           WHEN "account_from"=>name = 'СБЕР' OR "account_to"=>name = 'СБЕР'THEN true
+           WHEN "account_from"=>name = 'Касса ИП' OR "account_to"=>name = 'Касса ИП'THEN true
+           WHEN "account_from"=>name = 'ООО кредит' OR "account_to"=>name = 'ООО кредит' THEN true
+           ELSE false
+       END) = true
+   AND ($year IS NULL OR date_part('year', transaction_date)::int = $year) 
+   AND ($month IS NULL OR date_part('month', transaction_date)::int = $month)
+   AND ($account IS NULL OR (account_from = $account OR account_to = $account))
+   and ($class_type is NULL or ct.id = $class_type)
+ ORDER BY transactions.is_deleted,
+          transaction_date DESC,
+          transactions.id DESC,
+-- FOR INSERT INTO 
+--     fin.transactions
