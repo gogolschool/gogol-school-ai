@@ -1,0 +1,82 @@
+{
+    $id reference("crm"."actions") null @{},
+    $act_id int null @{},
+    $exclude_producers bool null @{},
+    $hide_desired_names bool null @{}
+}:
+
+SELECT
+    @type = 'table',
+    -- @row_link = &base.person_form,
+    @cell_variant = CASE WHEN COALESCE(sc.cnt, 0) > 0 THEN 'warning' END,
+    @row_height = 10,
+    
+    id @{
+        visible = $id is null
+    },
+    "action" @{
+        default_value = $id,
+        visible = $id is null
+    },
+
+    "contact" @{
+        "select" = true,
+        select_view = {
+            ref: &base.person_form, 
+            new: true,
+            default_values: {
+                is_employee: true,
+                is_client: false
+            }
+        },
+        options_view = {
+            ref: &base.all_masters_table,
+            args: {
+                only_masters: true
+            }
+        },
+        link = &base.person_form,
+    },
+    
+    "contact"=>__main as fio @{
+        visible = false
+    },
+    contact=>name_last_name @{
+        visible = false
+    },
+    contact=>desired_name @{
+        visible = $hide_desired_names IS NULL OR NOT $hide_desired_names
+    },
+    contact=>desired_full_name @{
+        visible = $hide_desired_names IS NULL OR NOT $hide_desired_names
+    }
+FROM
+    crm.masters_for_actions
+LEFT JOIN LATERAL(SELECT COUNT(1) AS cnt 
+                    FROM crm.actions AS les_all
+                    LEFT JOIN docs.staff_contracts as sc
+                           ON sc.staff = masters_for_actions.contact
+                          AND sc.date_from <= $id=>action_datetime::date
+                          AND sc.date_to >= $id=>end_datetime::date
+                        --   AND sc.stage IN ('Подписан', 'Распечатан')
+                          AND sc.pay_entity = 'ООО'
+                    LEFT JOIN LATERAL(SELECT les.id
+                                        FROM crm.actions AS les
+                                       WHERE les.parent_action = $id
+                                         AND les.action_datetime::date >= sc.date_from
+                                         AND les.action_datetime::date <= sc.date_to
+                                       GROUP BY les.id
+                                     ) AS les 
+                           ON les.id = les_all.id
+                        
+                   WHERE les_all.parent_action = $id
+                     AND les.id IS NULL
+                 ) AS sc ON true
+WHERE
+    ($id is null or action = $id)
+    and ($act_id is null or action = $act_id)
+    and ($exclude_producers IS NULL OR NOT $exclude_producers OR NOT COALESCE(is_stage_producer, false))
+    -- AND NOT is_stage_producer
+order by id desc
+FOR INSERT INTO
+    crm.masters_for_actions

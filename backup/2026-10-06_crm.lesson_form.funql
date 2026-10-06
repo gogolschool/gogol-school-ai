@@ -1,0 +1,219 @@
+{
+    $id reference(crm.actions)
+}:
+
+SELECT
+    @title = COALESCE(( select full_name from crm.actions where id = $id))  || 
+    CASE WHEN (SELECT is_deleted FROM crm.actions WHERE id = $id) THEN ' (АРХИВ)' ELSE '' END,
+    @type = 'form',
+    @max_width = '95%',
+    @block_sizes = [
+        4, 4, 4,
+        6, 6,
+        12,
+        3
+    ],
+    [{
+        caption: 'Сгенерировать лист посещения',
+        visible: $id IS NOT NULL AND not exists (select 1 from crm.visits_for_lessons where action = $id),
+        variant: 'success',
+        action: {
+            schema: 'crm',
+            name: 'generate_visit_list_for_lesson',
+        },
+        args: {
+            lesson: $id,
+        }
+    }] as lists_btn @{
+        form_block = 6,
+        control = 'buttons',
+    },
+    -- @form_buttons = [{
+    --     form_block: 6,
+    --     actions: 
+    --         CASE 
+    --             WHEN $id IS NOT NULL AND (COALESCE((SELECT COUNT(id) FROM crm.visits_for_lessons WHERE action = $id), 0) = 0) AND $$user_id=>name = 'poiree@bk.ru'
+                
+    --             THEN [
+    --                 {
+    --                     name: '!test Сгенерировать лист посещения ' || (SELECT COUNT(id) FROM crm.visits_for_lessons WHERE action = $id),
+    --                     variant: 'success',
+    --                     action: { schema: 'crm', name: 'generate_visit_list_for_lesson' },
+    --                     args: { lesson: $id}
+    --                 }
+    --             ] 
+    --         END
+    -- }],
+    @extra_actions = [{
+        name: 'История Изменений',
+        icon: 'change_history',
+        ref: &admin.change_history,
+        args: { schema: 'crm', name: ['actions'], id: $id}
+    }],
+        @panel_buttons = [
+        {
+            name: 'Действия с карточкой',
+            icon: 'create',
+            actions: [
+                {
+                    name: CASE 
+                        WHEN NOT (SELECT is_deleted FROM crm.actions WHERE id = $id) 
+                        THEN 'Архивировать'
+                    END,
+                    icon: 'archive',
+                    action: {
+                        schema: 'crm',
+                        name: 'archive_crm_actions'
+                    },
+                    args: {
+                        id: $id,
+                        status: true
+                    }
+                },
+                {
+                    name: CASE 
+                        WHEN (SELECT is_deleted FROM crm.actions WHERE id = $id) 
+                        THEN 'Восстановить'
+                    END,
+                    icon: 'unarchive',
+                    action: {
+                        schema: 'crm',
+                        name: 'archive_crm_actions'
+                    },
+                    args: {
+                        id: $id,
+                        status: false
+                    }
+                },
+            ]
+        }],
+    id @{
+        form_block = 0,
+        caption = 'ID',
+    },
+    name @{
+        form_block = 0,
+        caption = 'Название',
+    },
+    action_datetime @{
+        form_block = 0,
+        caption = 'Дата начала',
+    },
+    end_datetime @{
+        caption = 'Дата окончания',
+        form_block = 0
+    },
+    classroom @{
+        form_block = 0,
+        caption = 'Помещение',
+    },
+    $id=>parent_action=>topic @{
+        form_block = 0,
+        caption = 'Тема',
+        soft_disabled = true
+    },
+    {
+        ref: &crm.masters_for_action_select,
+        args: {
+            id: case when exists (select 1 from crm.masters_for_actions where action = $id=>parent_action) then $id=>parent_action else $id end 
+        }
+    } as members @{
+        form_block = 0,
+        caption = 'Мастера',
+        control = 'user_view'
+    },
+
+    class_status @{
+        form_block = 1
+    },
+    class_category @{
+        form_block = 1,
+    },
+    age @{
+        form_block = 1,
+    },
+    location @{
+        form_block = 1,
+    },
+    pay_type @{
+        form_block = 1,
+    },
+    class_type @{
+        form_block = 1,
+    },
+    is_at_school @{
+        form_block = 1,
+        caption = 'В школе'
+    },
+    [{
+        caption: 'Создать список',
+        visible: $$user_id=>name = 'poiree@bk.ru',
+        variant: 'success', icon: 'check_circle_outline',
+        action: {
+            schema: 'crm',
+            name: 'create_marketing_list_from_lesson',
+        },
+        args: {
+            id: $id,
+        }
+    }] as marketing @{
+        form_block = 0,
+        control = 'buttons',
+    },
+
+    parent_action @{
+        form_block = 2,
+        caption = 'Продукт',
+        link = (CASE WHEN parent_action=>is_b2b THEN &crm.b2b_product_form ELSE &crm.class_form END),
+        select_view = {
+            ref: &crm.class_form,
+            new: true
+        },
+    },
+    type @{
+        form_block = 2,
+        default_value = 'Занятие'
+    },
+    price @{
+        form_block = 2,
+        visible = false
+    },
+    is_deleted @{
+        form_block = 2,
+        visible = false
+    },
+    notes @{
+        form_block = 2,
+    },
+    /*is_master_record @{
+        form_block = 2,
+        caption = 'Занятие',
+        default_value = true,
+        visible = false,
+    },*/
+    {
+        ref: &crm.actions_for_lesson,
+        args: {
+            id: $id
+        }
+    } as actions @{
+        control = 'user_view',
+        form_block = 5,
+        caption = 'Действия'
+    },
+    {
+        ref:  &crm.visits_for_lesson_table_conn,
+        args: {
+            id: $id
+        }
+    } as visits @{
+        --caption = 'Посещения',
+        control = 'user_view',
+        form_block = 5,
+    },
+    FROM
+        crm.actions
+    WHERE
+        id = $id
+    FOR INSERT INTO
+        crm.actions

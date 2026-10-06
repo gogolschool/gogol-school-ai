@@ -1,0 +1,254 @@
+{ $id reference("base"."people") }:
+SELECT
+    @title = (SELECT main_name FROM base.people WHERE id = $id),
+    @type = 'form',
+    @max_width = '100%',
+    @create_link = &"base"."person_form",
+    @block_sizes = [
+        4, 3, 5,
+        12,12
+    ],
+    id,
+    "last_name" @{
+        form_block = 0
+    },
+    "first_name" @{
+        form_block = 0
+    },
+    "patronymic" @{
+        form_block = 0
+    },
+    nickname @{
+        form_block = 0
+    },
+    "sex" @{
+        form_block = 0,
+    },
+    phone @{
+        form_block = 0
+    },
+    email @{
+        form_block = 0
+    },
+    telegram @{
+        form_block = 0,
+    },
+    "date_of_birth" @{
+        form_block = 0,
+    },
+    "notes" @{
+        form_block = 0,
+    },
+    passport_no @{
+        form_block = 0,
+        cell_variant = CASE WHEN passport_no IS NULL THEN 'warning' END
+    },
+    passport_registered_at @{
+        form_block = 0,
+        cell_variant = CASE WHEN passport_registered_at IS NULL THEN 'warning' END
+    },
+    passport_issued @{
+        form_block = 0,
+        cell_variant = CASE WHEN passport_issued IS NULL THEN 'warning' END
+    },
+    passport_div_code @{
+        form_block = 0,
+        cell_variant = CASE WHEN passport_div_code IS NULL THEN 'warning' END
+    },
+    passport_address @{
+        form_block = 0,
+        cell_variant = CASE WHEN passport_address IS NULL THEN 'warning' END
+    },
+    itn @{
+        form_block = 0,
+        cell_variant = CASE WHEN itn IS NULL THEN 'warning' END
+    },
+    ogrnip @{
+        form_block = 0,
+        cell_variant = CASE WHEN ogrnip IS NULL THEN 'warning' END
+    },
+    snils @{
+        form_block = 0
+    },
+    is_lead @{
+        form_block = 1
+    },
+    "is_client" @{
+        form_block = 1,
+        caption = 'Студент'
+    },
+    "is_employee" @{
+        form_block = 1,
+    },
+    is_b2b_account @{
+        form_block = 1,
+        caption = 'Аккаунт B2B'
+    },
+    is_working @{
+        form_block = 1,
+        caption = 'Работает сейчас'
+    },
+    position @{
+        form_block = 1,
+        caption = 'Должность'
+    },
+    signatory_genitive @{
+        form_block = 1,
+        caption = 'В лице (род. падеж) — если автосклонение неверно'
+    },
+    "role" @{
+        form_block = 1,
+        caption = 'Роль'
+    },
+    is_admin @{
+        form_block = 1,
+        caption = 'Администратор'
+    },
+    admin_rate_per_hour @{
+        form_block = 1,
+        caption = 'Ставка админа (руб/ч)',
+        visible = is_admin
+    },
+    work_entity @{
+        form_block = 1,
+        -- visible = is_employee AND "role" = 'Мастер',
+    },
+    tax @{
+        form_block = 1
+    },
+    b2b_grade @{
+        form_block = 1,
+        caption = 'Уровень B2B'
+    },
+    business_with_self_employed @{
+        form_block = 1,
+    },
+    "is_deleted" @{
+        form_block = 1,  
+        visible = false
+    },
+    {
+        ref: &"base"."communication_ways_for_contact_table_conn",
+        args: {
+            id: $id
+        }
+    } as "communication_ways" @{
+        control = 'user_view',
+        form_block = 1,
+        caption = 'Способы связи'
+    },
+    {
+        ref: &fin.accounts_for_contact_table_conn,
+        args: {
+            id: $id
+        }
+    } as accounts @{
+        control = 'user_view',
+        form_block = 1,
+        caption = 'Cчета'
+    },
+    
+    {
+        ref: &fin.transactions_for_contact_table_conn,
+        args: {
+            id: $id
+        }
+    } as transactions @{
+        control = 'user_view',
+        form_block = 2,
+        caption = 'Транзакции',
+        visible = false,
+    },
+    {
+        ref: &hrm.rates_for_master_table_conn,
+        args: {
+            id: $id 
+        }
+    } as rates @{
+        control = 'user_view',
+        form_block = 2,
+        visible = case
+            when is_employee AND "role" = 'Мастер' then true
+            else false
+        end,
+    },
+    {
+        ref: &analytics.masters_time_for_lessons_total,
+        args: {
+            month: DATE_PART('month',$$transaction_time),
+            year: DATE_PART('year',$$transaction_time),
+            master: $id
+        },
+    } as current_month @{
+        control = 'user_view',
+        form_block = 2,
+        visible = case
+            when is_employee AND "role" = 'Мастер' then true
+            else false
+        end,
+        caption = 'Итого: текущий месяц'
+    },
+    teacher_description @{
+        form_block = 2,
+        visible = CASE
+            WHEN is_employee and "role" is not null and "role" = 'Мастер'
+            THEN true
+            ELSE false
+        END,
+    },
+    {
+        ref: &staffs.get_all_contracts_by_staff,
+        args: {
+            id: $id
+        },
+    } as contracts @{
+        control = 'user_view',
+        form_block = 3,
+        -- visible = case
+        --     when is_employee AND "role" = 'Мастер' then true
+        --     else false
+        -- end,
+    },
+    {
+        ref: &crm.actions_for_contact,
+        args: {
+            id: $id
+        }
+    } as actions @{
+        control = 'user_view',
+        form_block = 3,
+        caption = 'Действия',
+        visible = false
+    },
+    {
+        ref: &analytics.masters_time_for_lessons,
+        args: {
+            month: 0,
+            year: 0,
+            master: $id
+        }
+    } as masters_time @{
+        caption = 'Даты и время прихода мастера',
+        control = 'user_view',
+        form_block = 4,
+        visible = NOT is_admin
+    },
+    {
+        ref: &school_admins.admin_shifts_for_person,
+        args: {
+            month: DATE_PART('month', $$transaction_time),
+            year: DATE_PART('year', $$transaction_time),
+            master: $id
+        }
+    } as admin_shifts @{
+        caption = 'Смены администратора',
+        control = 'user_view',
+        form_block = 4,
+        visible = is_admin
+    }
+FROM 
+    "base"."people"
+WHERE 
+    id = $id
+FOR INSERT INTO
+    "base"."people"

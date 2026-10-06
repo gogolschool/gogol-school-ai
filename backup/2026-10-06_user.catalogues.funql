@@ -1,0 +1,60 @@
+SELECT
+    @"type" = 'menu',
+    @title = 'Справочники',
+    @menu_centered = true,
+    "menu"
+    
+FROM (
+    VALUES ([
+                {"name": 'Справочники', size: 8, "content": [
+                    {name: 'Продукты', size: 5, content: [
+                        {icon: '📌', "name": 'Категории Продуктов', ref: &crm.class_categories_table_all},
+                        {icon: '👨‍👩‍👧‍👦', "name": 'Возраст Продуктов', ref: &crm.ages_table_all},
+                        {icon: '🧳', "name": 'Локации Продуктов', ref: &crm.locations_table_all},
+                        {icon: '💸', "name": 'Типы оплаты Продуктов', ref: &crm.pay_type_table_all},
+                        {icon: '📓', "name": 'Типы Продуктов и статусы прогрева', ref: &crm.class_types_table_all},
+                        {icon: 'apps', name: 'Шаблоны рассылок для продуктов', ref: &crm.newsletter_templates_table },
+                        {icon: 'apps', name: 'Тест рассылок для продуктов', ref: &crm.test_reminders_userview },
+                    ]},
+                    {name: 'Разное', size: 5, content: [
+                        {icon: '❤️', "name": 'Статусы Лояльности', ref: &crm.loyalty_statuses_table_all},
+                        {icon: '✉️', "name": 'Статусы Заявок', ref: &crm.request_statuses_table_all},
+                        {icon: '🚫', name: 'Статусы Отмены', ref: &crm.cancellation_statuses_table},
+                        {icon: '✔️', "name": 'Статусы Занятий', ref: &crm.class_statuses_table_all},
+                        {icon: '', name: 'Статусы набора', ref: &crm.set_statuses_table_all},
+                        {icon: '🎭', "name": 'Помещения', ref: &crm.classrooms_table_all},
+                        {icon: '🗂', name: 'Константы', ref: &user.constants_table},
+                        {icon: '✉️', name: 'Пользователь wazzup', ref: &base.person_form, args: {id: 12663}},
+                        {icon: 'telegram', name: 'Рекламные исполнители', ref: &ad.advertisers_table}
+                    ]},
+                    {name: 'Финансы', size: 5, content: [
+                        {icon: '📜', name: 'Сертификаты', ref: &fin.transactions_certificates_table},
+                        {icon: '🧮', name: 'Оплата B2B (ставки)', ref: &fin.payroll_constants_table},
+                    ]},
+                { 
+                    "name": 'Тесты', "size": 4, "content": [
+                        -- {
+                        --     name: 'Тест Интервью',
+                        --     action: {
+                        --         schema: 'crm',
+                        --         name: 'create_interview_for_student',
+                        --     },
+                        --     args: {
+                        --         type: 'актерская',
+                        --         name: 'test',
+                        --         format: 'ОНЛАЙН',
+                        --         "date": '12.06.2023',
+                        --         time: '10:00-11:00',
+                        --         amount: 20,
+                        --         form: {
+                        --             name: 'Тестовый Тест Тестович',
+                        --             email: 'test2@test.ru',
+                        --             phone: '+79111111112'
+                        --         }
+                        --     },
+                        -- }
+                    ]
+                },
+                ]}
+            ])
+) AS menu ("menu")

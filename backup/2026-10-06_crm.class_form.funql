@@ -1,0 +1,932 @@
+{
+    $id reference(crm.actions),
+    $show_button_title bool null @{
+        caption = 'Показать статус записи'
+    }
+}:
+    SELECT
+        @title = (select full_name from crm.actions where id = $id) || 
+        CASE WHEN (SELECT is_deleted FROM crm.actions WHERE id = $id) THEN ' (АРХИВ)' ELSE '' END || 
+        CASE WHEN (SELECT is_monitor_payments FROM crm.actions WHERE id = $id) THEN ' 👀' ELSE '' END,
+        @type = 'form', 
+        @max_width = '95%',
+        @hidden_args = ['action_datetime'],
+        @block_sizes = [
+            4, 4, 4,
+            4, 4, 4,
+            12,
+            12, 
+            12
+        ],
+        @sub_block_titles = {
+            "0": {
+                "0": 'Название',
+                "1": 'Набор'
+            },
+            "1": {
+                "0": 'Параметры',
+                "1": 'Команда'
+            },
+            "2": {
+                "0": 'Финансы',
+                "1": 'Контент'
+            }
+        },
+        @sub_block_colors = {
+            "0": {
+                "0": 'rgba(99, 120, 200, 0.09)',
+                "1": 'rgba(20, 184, 166, 0.09)'
+            },
+            "1": {
+                "0": 'rgba(234, 179, 8, 0.09)',
+                "1": 'rgba(236, 72, 153, 0.09)'
+            },
+            "2": {
+                "0": 'rgba(16, 185, 129, 0.09)',
+                "1": 'rgba(168, 85, 247, 0.09)'
+            }
+        },
+        @extra_actions = [{
+            name: 'История изменений',
+            icon: 'change_history',
+            ref: &admin.change_history,
+            args: { schema: 'crm', name: ['actions'], id: $id }
+        }],
+        @panel_buttons = [
+        {
+            name: 'Занятия',
+            icon: 'task_alt',
+            actions: [
+                {
+                    name: 'Список',
+                    icon: 'subject',
+                    ref:  &crm.subclasses_for_class_table_conn,
+                    args: {
+                        id: $id
+                    },
+                    target: 'top'
+                },
+                {
+                    name: 'Генерация занятий',
+                    ref: &user.lessons_generator_by_product_form,
+                    args: {id: $id},
+                    new: not exists (select 1 from user.lessons_generator where product = $id),
+                    default_values: {
+                        product: $id
+                    },
+                    target: 'modal'
+                }
+                -- {
+                --     name: 'Генерация занятий',
+                --     ref: &user.lessons_generator_form,
+                --     new: true,
+                --     default_values: {
+                --         product: $id
+                --     },
+                --     target: 'modal'
+                -- }
+            ]
+        },
+        {
+            name: 'Действия',
+            icon: 'create',
+            actions: [
+                {
+                    name: CASE 
+                        WHEN NOT (SELECT is_monitor_payments FROM crm.actions WHERE id = $id) 
+                        THEN 'Следить за оплатами'
+                    END,
+                    icon: 'visibility',
+                    action: {
+                        schema: 'crm',
+                        name: 'monitor_payments_crm_actions'
+                    },
+                    args: {
+                        id: $id,
+                        status: true
+                    }
+                },
+                {
+                    name: CASE 
+                        WHEN (SELECT is_monitor_payments FROM crm.actions WHERE id = $id) 
+                        THEN 'Не следить за оплатами'
+                    END,
+                    icon: 'visibility_off',
+                    action: {
+                        schema: 'crm',
+                        name: 'monitor_payments_crm_actions'
+                    },
+                    args: {
+                        id: $id,
+                        status: false
+                    }
+                },
+                {
+                    name: CASE 
+                        WHEN NOT (SELECT is_deleted FROM crm.actions WHERE id = $id) 
+                        THEN 'Архивировать карточку'
+                    END,
+                    icon: 'archive',
+                    action: {
+                        schema: 'crm',
+                        name: 'archive_crm_actions'
+                    },
+                    args: {
+                        id: $id,
+                        status: true
+                    }
+                },
+                {
+                    name: CASE 
+                        WHEN (SELECT is_deleted FROM crm.actions WHERE id = $id) 
+                        THEN 'Восстановить карточку'
+                    END,
+                    icon: 'unarchive',
+                    action: {
+                        schema: 'crm',
+                        name: 'archive_crm_actions'
+                    },
+                    args: {
+                        id: $id,
+                        status: false
+                    }
+                }, 
+                -- {
+                --     name: 'Дублировать и создать',
+                --     icon: 'create',
+                --     action: {
+                --         schema: 'crm',
+                --         name: 'duplicate_action'
+                --     },
+                --     args: {
+                --         id: $id,
+                --     }
+                -- },
+                {
+                    name: 'Дублировать',
+                    icon: 'create',
+                    ref: &crm.class_form,
+                    new: true,
+                    default_values: {
+                        action_datetime: (select action_datetime from crm.actions where id = $id),
+                        action_fin_project: (select action_fin_project from crm.actions where id = $id),
+                        age: (select age from crm.actions where id = $id),
+                        base_contact: (select base_contact from crm.actions where id = $id),
+                        city: (select city from crm.actions where id = $id),
+
+                        class_category: (select class_category from crm.actions where id = $id),
+                        training_type: (select training_type from crm.actions where id = $id),
+                        classroom: (select classroom from crm.actions where id = $id),
+                        class_status: (select class_status from crm.actions where id = $id),
+                        class_type: (select class_type from crm.actions where id = $id),
+
+                        day_x: (select day_x from crm.actions where id = $id),
+                        description: '',
+                        due_days: (select due_days from crm.actions where id = $id),
+
+                        emoji: (select emoji from crm.actions where id = $id),
+                        end_datetime: (select end_datetime from crm.actions where id = $id),
+                        fin_segment: (select fin_segment from crm.actions where id = $id),
+                        generator: (select generator from crm.actions where id = $id),
+                        is_deleted: (select is_deleted from crm.actions where id = $id),
+                        is_monitor_payments: (select is_monitor_payments from crm.actions where id = $id),
+
+                        is_monitor_timepad: (select is_monitor_timepad from crm.actions where id = $id),
+                        location: (select location from crm.actions where id = $id),
+                        marketing_description: null,
+                        name: (select name from crm.actions where id = $id),
+
+                        name_for_payments: (select name_for_payments from crm.actions where id = $id),
+                        notes: (select notes from crm.actions where id = $id),
+                        parent_action: (select parent_action from crm.actions where id = $id),
+                        pause_end: (select pause_end from crm.actions where id = $id),
+
+                        pause_start: (select pause_start from crm.actions where id = $id),
+                        pay_from: (select pay_from from crm.actions where id = $id),
+                        pay_type: (select pay_type from crm.actions where id = $id),
+                        price: (select price from crm.actions where id = $id),
+                        price_text: (select price_text from crm.actions where id = $id),
+
+                        project: (select project from crm.actions where id = $id),
+                        push_announcement: (select push_announcement from crm.actions where id = $id),
+                        push_notification: (select push_notification from crm.actions where id = $id),
+                        reminder_name: (select reminder_name from crm.actions where id = $id),
+                        schedule_text: (select schedule_text from crm.actions where id = $id),
+                        season: (select season from crm.actions where id = $id),
+
+                        street: (select street from crm.actions where id = $id),
+                        sub_amount: (select sub_amount from crm.actions where id = $id),
+                        template_newsletter: (select template_newsletter from crm.actions where id = $id),
+                        topic: (select topic from crm.actions where id = $id),
+                        type: (select type from crm.actions where id = $id),
+                    },
+                    target: 'modal'
+                }
+            ]
+        }],
+        actions.id @{
+            form_sub_block = 0
+        },
+        generator @{
+            form_sub_block = 0,
+            visible = $$user_id=>name = 'vientooscuro@vientooscuro.ru'
+        },
+        -- is_deleted @{
+        --     form_block = 0,
+        --     caption = 'удален',
+        -- },
+        -- parent_action,
+        actions.name @{
+            form_block = 0,
+            form_sub_block = 0,
+            caption = 'Название',
+        },
+        name_for_payments @{
+            form_block = 0,
+            form_sub_block = 0
+        },
+        topic @{
+            form_block = 0,
+            form_sub_block = 0,
+            caption = 'Тема'
+        },
+        emoji @{
+            form_block = 0,
+            form_sub_block = 0,
+            visible = class_type = 18
+        },
+        round(
+            (select count(1) from crm.actions_for_contacts as afc 
+            where afc.action = $id and afc.request_status in (6, 7, 18)
+        )::decimal / "limit" * 100, 2) || '%' as percent @{
+            form_block = 0,
+            form_sub_block = 1,
+            caption = 'Процент набора'
+        },
+        -- enrollment_period @{
+        --     form_block = 0,
+        -- },
+        -- если занятие ещё не началось, смотрим на количество заявок, 
+        -- если заявок меньше лимита – считаем до даты занятия
+        -- если заявок >= лимит, то останавливаемся на дате последней оплаты
+        (case when $$transaction_time < action_datetime then 
+            case when (
+                select count(1) 
+                from crm.actions_for_contacts as afc 
+                where afc.action = crm.actions.id
+                and afc.request_status in (6, 18)
+            ) < crm.actions."limit" then 
+                ($$transaction_time + '3 hours'::interval)::date - announcement_date
+            else 
+                -- + 3 часа, потому что смотрим по МСК
+                ((select 
+                    transaction_date
+                from fin.transactions as t
+                where
+                    t.action = crm.actions.id
+                and t.request=>request_status in (6, 7, 11, 13, 15, 18)
+                and t.id = (select id from fin.transactions
+                        where 
+                            fin.transactions.action = crm.actions.id
+                        and 
+                        request=>request_status in (6, 7, 11, 13, 15, 18)
+                        group by request, id
+                        order by transaction_date
+                        offset 29 limit 1 
+                )
+                limit 1) + '3 hours'::interval)::date - announcement_date
+            end
+        else
+        -- если занятие началось, а заявок меньше лимита, то дней в наборе – от старта до начала занятия
+        -- если заявок >= лимит, то смотрим по дате последней оплаты
+            case when (
+                select count(1) 
+                from crm.actions_for_contacts as afc 
+                where afc.action = crm.actions.id
+                and afc.request_status in (6, 7, 11, 13, 15, 18)
+            ) < crm.actions."limit" then 
+                action_datetime::date - announcement_date
+            else 
+                (
+                --     (select 
+                --     transaction_date
+                -- from fin.transactions as t
+                -- where
+                --     t.action = crm.actions.id
+                -- and t.request=>request_status in (6, 7, 11, 13, 15, 18)
+                -- and t.id = (select id from fin.transactions
+                --         where 
+                --             fin.transactions.action = crm.actions.id
+                --         and 
+                --         request=>request_status in (6, 7, 11, 13, 15, 18)
+                --         group by request, id
+                --         order by transaction_date
+                --         offset 29 limit 1 
+                -- )
+                -- limit 1
+                t.transaction_date
+                 + '3 hours'::interval)::date - announcement_date
+            end
+        end) as enrollment_period @{
+            caption = 'Дней в наборе'
+        },
+        t.id as tid @{ form_sub_block = 1 },
+        announcement_date @{
+            form_block = 0,
+            form_sub_block = 0
+        },
+        action_datetime @{
+            form_block = 0,
+            form_sub_block = 0,
+            caption = 'Дата начала',
+        },
+        end_datetime @{
+            form_block = 0,
+            form_sub_block = 0,
+            caption = 'Дата окончания'
+        },
+        case when action_datetime::date - $$transaction_time::date > 0 then
+            action_datetime::date - $$transaction_time::date
+        else 
+            0
+        end as days_before @{
+            form_block = 0,
+            form_sub_block = 1,
+            caption = 'Дней до старта',
+            visible = action_datetime::date > $$transaction_time::date
+        },
+        day_x @{
+            form_block = 0,
+            form_sub_block = 0,
+            visible = class_type = 1
+        },
+        classroom @{
+            form_block = 0,
+            form_sub_block = 0,
+            caption = 'Основное помещение',
+        },
+        due_days @{
+            form_block = 0,
+            form_sub_block = 0,
+            visible = class_type = 19
+        },
+        due_days_text @{
+            form_block = 0,
+            form_sub_block = 0,
+            visible = $$user_id=>name = 'poiree@bk.ru'
+        },
+        (   SELECT COUNT(id) as cnt,
+            FROM crm.actions
+            WHERE type = 'Занятие' AND parent_action = $id
+        ) as lessons @{
+            caption = 'Занятий',
+            form_block = 0,
+            form_sub_block = 1
+        },
+        city @{
+            form_block = 0,
+            form_sub_block = 0
+        },
+        street @{
+            form_block = 0,
+            form_sub_block = 0
+        },
+        telegram_chat @{
+            form_block = 0,
+            form_sub_block = 0
+        },
+        season_labs_channel @{
+            form_block = 0,
+            form_sub_block = 0,
+            caption = 'Канал лабораторий сезона',
+            visible = class_type = 1
+        },
+        schedule_text @{
+            form_block = 0,
+            form_sub_block = 0
+        },
+        [{
+            caption: 'Создать список',
+            -- visible: $$user_id=>name = 'poiree@bk.ru',
+            variant: 'success', icon: 'check_circle_outline',
+            action: {
+                schema: 'crm',
+                name: 'create_marketing_list_from_product',
+            },
+            args: {
+                id: $id,
+            }
+        }] as marketing @{
+            form_block = 0,
+            form_sub_block = 1,
+            control = 'buttons',
+        },
+
+        class_status @{
+            form_block = 1,
+            form_sub_block = 0
+        },
+        class_category @{
+            form_block = 1,
+            form_sub_block = 0
+        },
+        training_type @{
+            form_block = 1,
+            form_sub_block = 0,
+            select_view = {
+                ref: &crm.training_type_form,
+                new: true,
+            },
+        },
+        age @{
+            form_block = 1,
+            form_sub_block = 0
+        },
+        location @{
+            form_block = 1,
+            form_sub_block = 0
+        },
+        pay_type @{
+            form_block = 1,
+            form_sub_block = 0
+        },
+        class_type @{
+            form_block = 1,
+            form_sub_block = 0
+        },
+        merch_kind @{
+            form_block = 1,
+            form_sub_block = 0
+        },
+        announced @{
+            form_block = 1,
+            form_sub_block = 0
+        },
+            pay_from @{
+            form_block = 1,
+            form_sub_block = 0
+        },
+        master_rate_subtype @{
+            form_block = 1,
+            form_sub_block = 0,
+            caption = 'Подтип ставки мастеров',
+            visible = type = 'Продукт'
+        },
+        sub_amount @{
+            caption = 'Количество занятий',
+            form_block = 1,
+            form_sub_block = 0,
+            visible = class_type=>name = 'Абонемент' AND type = 'Продукт'
+        },
+        season @{
+            form_block = 1,
+            form_sub_block = 0,
+            -- cell_variant = CASE WHEN season IS NULL THEN 'warning' END,
+            visible = class_type=>name = 'Лаборатория' AND type = 'Продукт'
+        },
+       {
+            ref: &crm.masters_for_action_select,
+            args: {
+                id: $id
+            }
+        } as members @{
+            form_block = 1,
+            form_sub_block = 1,
+            caption = 'Мастера',
+            control = 'user_view'
+        },
+        {
+            ref: &crm.producers_for_action_select,
+            args: {
+                id: $id
+            }
+        } as stage_producers @{
+            form_block = 1,
+            form_sub_block = 1,
+            caption = 'Режиссеры',
+            control = 'user_view',
+            --visible = false
+        },
+        type @{
+            form_block = 2,
+            form_sub_block = 0,
+            default_value = 'Продукт',
+                        cell_color = case when current_theme() in ('admin.light_old') then
+                type.@option_variant
+            end,
+            option_variant = case when current_theme() not in ('admin.light_old') then
+                type.@option_variant
+            end},
+        fin_segment @{
+            form_block = 2,
+            form_sub_block = 0,
+                        cell_color = case when current_theme() in ('admin.light_old') then
+                fin_segment.@option_variant
+            end,
+            option_variant = case when current_theme() not in ('admin.light_old') then
+                fin_segment.@option_variant
+            end},
+        action_fin_project @{
+            form_block = 2,
+            form_sub_block = 0,
+            select_view = {
+                ref: &fin.fin_projects_form,
+                new: true,
+                target: 'modal'
+            },
+                        cell_color = case when current_theme() in ('admin.light_old') then
+                action_fin_project.@option_variant
+            end,
+            option_variant = case when current_theme() not in ('admin.light_old') then
+                action_fin_project.@option_variant
+            end},
+        pl_start_date @{
+            form_block = 2,
+            form_sub_block = 0,
+            visible = $$user_id=>name in ('bella.fatt@gogol.school', 'vientooscuro@vientooscuro.ru', 'romanova.ekaterina@gogol.school')
+        },
+        pl_end_date @{
+            form_block = 2,
+            form_sub_block = 0,
+            visible = $$user_id=>name in ('bella.fatt@gogol.school', 'vientooscuro@vientooscuro.ru', 'romanova.ekaterina@gogol.school')
+        },
+        split_parts @{
+            form_block = 2,
+            form_sub_block = 0,
+            visible = $$user_id=>name in ('bella.fatt@gogol.school', 'vientooscuro@vientooscuro.ru', 'romanova.ekaterina@gogol.school')
+        },
+        total_month_count @{
+            form_block = 2,
+            form_sub_block = 0,
+            visible = $$user_id=>name in ('bella.fatt@gogol.school', 'vientooscuro@vientooscuro.ru', 'romanova.ekaterina@gogol.school')
+        },
+        template_newsletter @{
+            form_block = 2,
+            form_sub_block = 1
+        },
+        parent_action @{
+            form_block = 2,
+            form_sub_block = 1,
+            visible = class_type = 6 or $$user_id=>name = 'bella.fatt@gogol.school', --'Открытый урок',
+            caption = 'Родительский продукт',
+            link = &crm.class_form
+        },
+        price @{
+            form_block = 2,
+            form_sub_block = 0,
+            number_format = 'ru'
+        },
+        -- не учитываем возвраты, учитываем только те оплаты, где не было возвратов и не запрашивали возвраты
+        (
+            select count(1) from (
+                select 1 as v from fin.transactions 
+                where 
+                (action = $id or request=>action = $id)
+                and tks_state in ('CONFIRMED', 'AUTHORIZED', 'SIGNED') 
+                and request=>cancellation_status is null
+                and not is_deleted
+                group by request
+                ) as unique_requests 
+        ) * price - (
+            select sum(case when from_our_organization then 0-amount else amount end)
+            from fin.transactions
+            where 
+            (action = $id or request=>action = $id)
+            and tks_state in ('CONFIRMED', 'AUTHORIZED', 'SIGNED') 
+            and request=>cancellation_status is null
+            and not is_deleted
+        ) as revenue_diff @{
+            caption = 'ожидаемая выручка - выручка',
+            form_block = 2,
+            form_sub_block = 0
+        },
+        (
+            select COALESCE(SUM(
+                case when from_our_organization then 0-COALESCE(used_card_amount, 0) else COALESCE(used_card_amount, 0) end
+            ), 0)::decimal
+            from fin.transactions
+            where
+                (action = $id or request=>action = $id)
+                and tks_state in ('CONFIRMED', 'AUTHORIZED', 'SIGNED', 'PARTIAL_REFUNDED', 'REFUNDED')
+                and not is_deleted
+        ) as bonuses_used @{
+            caption = 'Потрачено баллов',
+            form_block = 2,
+            form_sub_block = 0,
+            number_format = 'ru'
+        },
+        (SELECT SUM(rfs.subscription_cost) FROM subscription.requests_for_subscriptions AS rfs WHERE rfs.request=>action = $id AND rfs.request=>request_status <> 9 AND rfs.request=>request_status <> 17) AS subscription_revenue @{
+        caption = 'Выручка по абонементам',
+        },
+        "limit" @{
+            form_block = 2,
+            form_sub_block = 0
+        },
+        sold_out_at @{
+            form_block = 2,
+            form_sub_block = 0,
+            caption = 'Распродан с',
+            visible = type = 'Продукт'
+        },
+        case when sold_out_at is not null then '🔴 Да' else '🟢 Нет' end as is_sold_out @{
+            form_block = 2,
+            form_sub_block = 0,
+            caption = 'Распродан',
+            visible = type = 'Продукт'
+        },
+        round(coalesce(avg_request_cost.avg_amount, 0)::decimal, 2) as avg_request_cost @{
+            caption = 'Средняя стоимость заявки',
+            form_block = 2,
+            form_sub_block = 0,
+            number_format = 'ru'
+        },
+        case when 
+                coalesce(sales_manager_info.requests_without_manager, 0) + coalesce(sales_manager_info.requests_with_manager, 0) > 0 
+            then 
+                round(coalesce(sales_manager_info.requests_without_manager, 0)::decimal * 100 / (coalesce(sales_manager_info.requests_without_manager, 0) + coalesce(sales_manager_info.requests_with_manager, 0))::decimal, 2) || '%'
+            else ''
+        end as pay_by_themself @{
+            caption = 'Оплатили сами',
+            form_block = 2,
+            form_sub_block = 0
+        },
+        case when 
+                coalesce(sales_manager_info.requests_without_manager, 0) + coalesce(sales_manager_info.requests_with_manager, 0) > 0 
+            then 
+                round(coalesce(sales_manager_info.requests_with_manager, 0)::decimal * 100 / (coalesce(sales_manager_info.requests_without_manager, 0) + coalesce(sales_manager_info.requests_with_manager, 0))::decimal, 2) || '%'
+            else ''
+        end as pay_with_manager @{
+            caption = 'Оплатили с помощью ОП',
+            form_block = 2,
+            form_sub_block = 0
+        },
+        pause_start @{
+            form_block = 2,
+            form_sub_block = 0
+        },
+        pause_end @{
+            form_block = 2,
+            form_sub_block = 0
+        },
+        actions.is_deleted @{
+            form_block = 2,
+            form_sub_block = 0,
+            visible = false
+        },
+        notes @{
+            form_block = 2,
+            form_sub_block = 1
+        },
+        case when $show_button_title then
+            case when force_wait_list or wait_list_manually = 'в список ожидания' or 
+                (wait_list_manually = 'по умолчанию' and (
+                SELECT COUNT(id) FROM crm.actions_for_contacts WHERE (
+                    action = actions.id
+                    OR action=>parent_action = actions.parent_action
+                    OR action=>parent_action = actions.id
+                    OR action = actions.parent_action
+                ) AND request_status = 6 
+            ) >= "limit" or 
+                (SELECT COUNT(id) FROM crm.actions_for_contacts WHERE (
+                    action = actions.id
+                    OR action=>parent_action = actions.parent_action
+                    OR action=>parent_action = actions.id
+                    OR action = actions.parent_action
+                ) AND (request_status = 6 or request_status = 14)
+            ) >= "limit" + 5)
+            then
+                'Записаться в лист ожидания'
+            else
+                'Записаться'
+            end
+        else
+            null
+        end as button_title @{
+            caption = 'Статус записи',
+            form_block = 2,
+            visible = $show_button_title and $$user_id=>name = 'vientooscuro@vientooscuro.ru'
+        },
+        marketing_description @{
+            form_block = 2,
+            form_sub_block = 1,
+            control_height = 120,
+            text_type = 'multiline',
+            visible = class_type = 18
+        },
+        [{
+            caption: 'Подготовить маркетинговое описание',
+            -- visible: $$user_id=>name = 'poiree@bk.ru',
+            variant: 'success', icon: 'check_circle_outline',
+            action: {
+                schema: 'crm',
+                name: 'update_product_marketing_description',
+            },
+            args: {
+                id: $id,
+            }
+        }] as marketing_description_generator @{
+            form_block = 2,
+            form_sub_block = 1,
+            visible = class_type = 18,
+            control = 'buttons',
+        },
+        description @{
+            form_block = 2,
+            form_sub_block = 1,
+            control_height = 120,
+            text_type = 'multiline',
+        },
+        [{
+            caption: 'Подготовить описание',
+            -- visible: $$user_id=>name = 'poiree@bk.ru',
+            variant: 'success', icon: 'check_circle_outline',
+            action: {
+                schema: 'crm',
+                name: 'update_lessons_text_by_product',
+            },
+            args: {
+                id: $id,
+            },
+            -- confirm: {
+            --     title: 'Точно обновить?',         
+            --     message: 'Это нельзя отменить',    
+            --     okTitle: 'Да',                     
+            --     okVariant: 'danger',               
+            --     cancelTitle: 'Отмена',             
+            --     cancelVariant: 'outline-secondary' 
+            -- }
+        }] as buttons @{
+            form_block = 2,
+            form_sub_block = 1,
+            control = 'buttons',
+        },
+        push_announcement @{
+            form_block = 2,
+            form_sub_block = 1,
+            control_height = 120,
+            text_type = 'multiline',
+            visible = class_type = 18
+        },
+        
+        push_notification @{
+            form_block = 2,
+            form_sub_block = 1,
+            control_height = 120,
+            text_type = 'multiline',
+            visible = class_type = 18
+        },
+        
+        -- reminder_name @{
+        --     form_block = 3,
+        -- },
+
+
+        -- [{
+        --     caption: 'Отправить О занятиях послезавтра',
+        --      visible: $$user_id=>name = 'poiree@bk.ru',
+        --     variant: 'outline-info', icon: 'check_circle_outline',
+        --     action: {
+        --         schema: 'crm',
+        --         name: 'send_reminders_for_product',
+        --     },
+        --     args: {
+        --         product: $id,
+        --     }
+        -- }] as btn_send @{
+        --     form_block = 3,
+        --     control = 'buttons',
+        -- },
+        {
+            ref: &sales.sales_actions_for_contacts_table,
+            args: {
+                id: $id
+            }
+        } as sale_requests @{
+            caption = 'Заявки ОП',
+            control = 'user_view',
+            form_block = 8,
+            visible = class_type = 34 -- набор
+        },
+        {
+            ref: &crm.actions_for_baskets,
+            args: {
+                action: $id
+            }
+        } as baskets @{
+            form_block = 7,
+            caption = 'Продукт содержится в корзинках:',
+            control = 'user_view'
+        },
+        {
+            ref: &crm.ticket_products_table,
+            args: {
+                id: $id
+            }
+        } as products_in_ticket @{
+            control = 'user_view',
+            form_block = 8,
+            visible = class_type = 35 -- только для билетов
+        },
+        {
+            ref: &crm.requests_for_class_table_conn,
+            args: {
+                id: $id
+            }
+        } as requests @{
+            --caption = 'Заявки',
+            control = 'user_view',
+            form_block = 9,
+            visible = class_type != 34 -- набор
+        },
+        {
+            ref: &crm.requests_for_ticket,
+            args: {
+                ticket: $id
+            }
+        } as requests_for_ticket @{
+            --caption = 'Заявки',
+            control = 'user_view',
+            form_block = 10,
+            visible = class_type = 35
+        },
+        {
+            ref: &stats.stat_for_stages_in_actions,
+            args: {
+                id: $id
+            }
+        } as stages_stat @{
+            caption = 'Статистика',
+            control = 'user_view',
+            form_block = 11
+        },
+        {
+            ref: &fin.transactions_for_class_table_conn,
+            args: {
+                id: $id
+            }
+        } as transactions @{
+            --caption = 'Оплаты',
+            control = 'user_view',
+            form_block = 12,
+            -- visible = class_type != 18
+        },
+    FROM
+        crm.actions
+    LEFT JOIN LATERAL 
+        (
+            select
+                sum(case when has_manager = 1 then 1 else 0 end) as requests_with_manager,
+                sum(case when has_manager = 0 then 1 else 0 end) as requests_without_manager
+            from (
+                select
+                    request,
+                    case when count(sales_manager) > 0 then 1 else 0 end as has_manager
+                from fin.transactions
+                where (action = actions.id or request=>action = actions.id)
+                AND request=>request_status in (6, 7) -- обучается или прошел обучение
+                AND tks_state in ('CONFIRMED', 'AUTHORIZED', 'SIGNED')
+                and amount > 0
+                group by request
+            ) as t
+        ) as sales_manager_info ON true
+    LEFT JOIN LATERAL
+    (
+        select avg(total_amount)::decimal as avg_amount
+        from (
+            select request, total_amount from (
+                select
+                    request,
+                    sum(amount) as total_amount
+                from fin.transactions
+                where
+                    (action = actions.id or request=>action = actions.id)
+                    and tks_state in ('CONFIRMED', 'AUTHORIZED', 'SIGNED')
+                    and not is_deleted
+                    and request=>request_status in (6, 7)
+                    and request not in (
+                        select request from fin.transactions
+                        where tks_state in ('REFUNDED', 'PARTIAL_REFUNDED')
+                        and not is_deleted
+                        and request is not null
+                    )
+                group by request
+            ) as grouped
+            where total_amount > 0
+        ) as per_request
+    ) as avg_request_cost ON true
+    left join fin.transactions as t
+    on t.action = actions.id
+    and t.request=>request_status in (6, 7, 11, 13, 15, 18)
+    and
+        (
+        select count(1)
+        from fin.transactions as x
+        where x.action = t.action
+        and x.request=>request_status in (6, 7, 11, 13, 15, 18)
+        and (x.transaction_date < t.transaction_date
+            or (x.transaction_date = t.transaction_date and x.id <= t.id))
+    ) = actions."limit"
+    WHERE
+        actions.id = $id
+    FOR INSERT INTO
+        crm.actions
