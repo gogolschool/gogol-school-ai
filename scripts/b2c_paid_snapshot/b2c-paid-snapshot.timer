@@ -1,0 +1,9 @@
+[Unit]
+Description=b2c-paid-snapshot раз в сутки в 03:10 МСК
+
+[Timer]
+OnCalendar=*-*-* 03:10:00 Europe/Moscow
+Persistent=true
+
+[Install]
+WantedBy=timers.target

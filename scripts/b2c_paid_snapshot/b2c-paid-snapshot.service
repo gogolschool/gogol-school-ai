@@ -1,0 +1,11 @@
+[Unit]
+Description=Озма: «Платных на день занятия» на прошедших занятиях лаб/интенсивов/курсов
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=agentbot
+WorkingDirectory=/home/agentbot/bots/b2c-paid-snapshot
+ExecStart=/usr/bin/python3 /home/agentbot/bots/b2c-paid-snapshot/b2c_paid_snapshot.py
+TimeoutStartSec=600
