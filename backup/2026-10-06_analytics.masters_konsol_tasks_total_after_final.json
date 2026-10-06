@@ -1,0 +1,41 @@
+{
+ "view_id": 1785,
+ "view": "analytics.masters_konsol_tasks_total",
+ "stored_equals_candidate_ws_normalized": true,
+ "live_after": {
+  "2026-06": {
+   "total": 2215145.0,
+   "rows": 1
+  },
+  "2026-07": {
+   "total": 2352616.25,
+   "rows": 1
+  },
+  "2026-08": {
+   "total": 2104813.25,
+   "rows": 1
+  },
+  "2026-09": {
+   "total": 1040590.0,
+   "rows": 1
+  }
+ },
+ "candidate": {
+  "2026-06": {
+   "total": 2215145.0,
+   "rows": 1
+  },
+  "2026-07": {
+   "total": 2352616.25,
+   "rows": 1
+  },
+  "2026-08": {
+   "total": 2104813.25,
+   "rows": 1
+  },
+  "2026-09": {
+   "total": 1040590.0,
+   "rows": 1
+  }
+ }
+}
