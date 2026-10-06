@@ -1,0 +1,16 @@
+entity,id,field,old_value,new_value
+crm.visits_for_lessons,160730,rate_manually,,15000
+crm.visits_for_lessons,160732,rate_manually,,5377
+crm.visits_for_lessons,160731,rate_manually,,3000
+crm.visits_for_lessons,160579,rate_manually,,11925
+crm.visits_for_lessons,160580,rate_manually,,12038
+staffs.masters_salary_records,646,amount,60000,45000
+staffs.masters_salary_records,658,amount,64518,16131
+staffs.masters_salary_records,654,amount,22500,9000
+staffs.masters_salary_records,650,amount,20611,27882
+staffs.masters_salary_records,661,amount,29585,36919
+fin.economics,20642,amount|total_amount,60000|126342,45000|111342
+fin.economics,20660,amount|total_amount,64518|113447.5,16131|65060.5
+fin.economics,20654,amount|total_amount,22500|99000,9000|85500
+fin.economics,20646,amount|total_amount,20611|99874.5,27882|107145.5
+fin.economics,20663,amount|total_amount,29585|29585,36919|36919
