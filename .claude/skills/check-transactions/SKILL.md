@@ -15,32 +15,15 @@ User says one of:
 
 1. **Parse target date** from the user's message. Russian relative dates: "вчера" = today−1, "сегодня" = today. ISO: `YYYY-MM-DD`. Russian month names: «20 мая» = `2026-05-20` (year = current). If ambiguous, ASK before fetching.
 
+   **Без даты (и в плановом автозапуске) — окно от маркера «+».** В `fin.transactions` комментарий
+   «+» стоит на последней сверенной оплате (см. шаг 9). Найти его (`comment = '+'` или «+» в составе
+   комментария через запятую), взять его МСК-дату и **отнять двое суток** — это первый день окна;
+   последний — **сегодня до текущего момента**. Прогнать шаги 3–5 по каждому дню окна. Двое суток
+   назад — потому что строки доезжают в Озму задним числом (охлаждение рассрочки, вечерние
+   подтверждения, недоехавшие вебхуки); повторная сверка уже проверенного дня безопасна.
+   Сегодняшний день всегда входит в окно отдельным блоком с пометкой «предварительно, день не закрыт».
+
    **Сверять надо закрытый день.** МСК-день закрывается в 00:00 следующих суток. Пока он открыт, картина неполная: подтверждения по рассрочке приходят вечером (у CP по одной и той же транзакции `CreatedDate` 15:26, `AuthDate` 19:25, `ConfirmDate` 19:39 МСК), а payout уходит следующим днём. Если просят сегодняшний день — сверить можно, но сразу сказать, что это предварительно: скрипт сам поставит ⚠️ в шапку отчёта и в «Что делать».
-
-1b. **Определить, с чего сверять — якорь «+».** Скилл идёт не «за календарный день»,
-   а с последней проверенной транзакции. Якорь стоит в колонке «Комментарий»
-   «Ежедневного отчёта» (вью `fin.transactions_table_all` = `fin.transactions.comment`):
-
-   ```funql
-   SELECT id, transaction_date, tks_order_id, account_to=>name as acc, tks_customer_name
-   FROM "fin"."transactions"
-   WHERE is_deleted = false AND comment = '+'
-   ORDER BY transaction_date DESC LIMIT 1
-   ```
-
-   - Сравнение **строго `comment = '+'`**, не `LIKE '%+%'` — иначе поймаются «ЛАБ + тг»,
-     «промик ок + часть сертификатом» и телефоны.
-   - Якорь найден → сверяем период **от `transaction_date` этой строки (не включая её)
-     по конец последнего закрытого МСК-дня**.
-   - Якоря нет (первый прогон после сброса) → fallback: последняя транзакция с
-     «отправлено» в комментарии (`comment LIKE '%тправлен%'`). Если и её нет —
-     спросить дату у пользователя, не сверять молча за всю историю.
-   - Если период получился больше 3 дней — сказать это в отчёте («Проверено с ДД.ММ
-     по ДД.ММ, N транзакций») и не удивляться объёму: значит, сверку не делали.
-
-   Диапазон может покрывать несколько дней — шаги 3–5 тогда гоняются по каждому
-   МСК-дню отдельно (fetch/reconcile работают посуточно), а отчёт пользователю
-   собирается один, с общей шапкой.
 
 2. **Determine intent:**
    - "сверь" / "reconcile" / `--force` → always fetch
@@ -68,8 +51,9 @@ User says one of:
      account_from, account_from=>name as account_from_name, account_from=>type as account_from_type,
      account_from=>contractor as cert_buyer_id, account_from=>contact as cert_holder_id,
      payment_type, tks_customer_name, tks_description,
-     customer, tks_email, tks_phone,
-     is_certificate, is_certificate_payment, used_certificate_amount, comment
+     customer, action, tks_email, tks_phone, tks_promocode,
+     is_certificate, is_certificate_payment, used_certificate_amount, comment,
+     tks_is_gift, tks_paper_certificate, tks_gift_recipient, certificate_number
    FROM "fin"."transactions"
    WHERE is_deleted = false
      AND (
@@ -81,15 +65,20 @@ User says one of:
         AND transaction_date >= '<prev_date> 21:00:00+00:00'::datetime
         AND transaction_date <  '<date> 21:00:00+00:00'::datetime)
      )
+   ORDER BY tks_date_time, id
    ```
+   `action` нужен, чтобы найти пару к погашению сертификата; `tks_is_gift` /
+   `tks_paper_certificate` / `tks_gift_recipient` — для комментариев к подарочным
+   сертификатам; `tks_promocode` — чтобы не флагать «сумма ниже цены», когда скидку дал
+   промокод (напр. `ITSTRY`: пробное за 500 ₽ вместо 1 500 ₽). Всё это — шаг 7.
+   **Лимит ответа `funql_query` — 50 строк за вызов** (даже если передать `limit` больше): в конце
+   приходит маркер `{"_truncated": true, "_total": N, "_returned": 50}`. Если `_total` > 50 —
+   листать `offset=50, 100, …` с тем же `ORDER BY tks_date_time, id` и склеивать. Маркер
+   `_truncated` из списка убрать. Поля-ссылки (`account_to`, `customer`, …) приходят объектами
+   `{id, pun}` — reconcile.py принимает и объект, и число.
+
    Save returned rows to `/tmp/reconcile_<date>/ozma.json` as `{date, count, fetched_at_utc, transactions: [...]}`.
-   (`customer`, `tks_email`, `tks_phone` feed the level-3 contact comparison. Reference
-   columns — `account_to`, `account_from`, `customer`, `cert_buyer_id`, `cert_holder_id`,
-   `payment_type` — serialize as int or as `{id, pun}` depending on the client; save the rows
-   as they come, reconcile.py normalizes both via `_ref_id()`. **Всякий раз, когда в коде
-   читается reference-поле, оно обязано проходить через `_ref_id()`** — иначе сравнение
-   падает на `{id, pun}` (регрессия 03.09.2026 в `compare_contacts`); это покрыто
-   `test_ref_columns.py`.)
+   (`customer`, `tks_email`, `tks_phone` feed the level-3 contact comparison; `customer` may serialize as int or `{id,...}` — reconcile.py handles both.)
 
    **Certificate rows use a different date column.** Certificate-usage rows
    (`is_certificate_payment = true`, `account_from=>type = 'Сертификат'`) have
@@ -196,8 +185,25 @@ User says one of:
    - **Пункт 3** — каналы, которые сверились автоматически (CloudPayments, Mixplat):
      только итог, без «расхождений» уровня 1/2, если они вызваны невыгруженными
      провайдерами.
-   - **Пункт 4** — итог по блоку `## 🎁 Сертификаты` из reconcile.py.
-   - После отчёта спросить: применить ли авто-комментарии к сертификатам (шаг 7).
+   - **Пункт 4** — итог по блоку `## 🎁 Сертификаты` из reconcile.py: сколько комментариев
+     записано (шаг 7), какие подарочные сертификаты бумажные (их надо подготовить).
+   - **Коротко.** По каналу — количество и сумма, без списка «крупных» оплат. Деталь конкретной
+     оплаты — только если с ней что-то не так или нужно действие.
+   - **Без внутренней кухни провайдеров**: не писать про дрейф статусов, бэкфиллы, названия
+     скриптов, хронику попыток (Сплит не прошёл → оплатила Долями — не интересно). Без «лирики» —
+     наблюдений без практической пользы.
+   - **`CONFIRMED` и `AUTHORIZED` — оба «оплата прошла»**, без оговорок «проверить, подтвердится ли».
+   - **Не прошло в банке (FAILED, отменённые попытки) — не упоминать.** Флагать только обратное:
+     в банке прошло, а в Озме «Ожидается оплата» (пункт 0).
+   - **«Ожидается оплата» в Озме — не оплата и не дубль.** Брошенные попытки упоминать только
+     от **10 000 ₽**. Исключение — рассрочка (`CloudPayments - Рассрочка`): там «Ожидается оплата»
+     = ждём одобрения банка, это не мусор. Реальный дубль = два и более `CONFIRMED` на одну заявку.
+   - **Нулевые строки (0 ₽, оплата сертификатом) в worklist не выносить.** Если по каналу остались
+     только нулевые — «реальных платежей нет».
+   - **Служебные карточки не упоминать и не флагать:** Фатт Бэлла (контакт 42) и
+     «Шварцер Валентина Михайловна (офис)» (контакт 19379 — с неё идут тестовые оплаты; признак
+     теста — бессмысленное `tks_customer_name` при почте `valmat5638@gmail.com`).
+   - Сумма ниже цены продукта — сначала проверить `tks_promocode`.
 
    Сырой Markdown reconcile.py не показывай, если пользователь явно не попросил
    «покажи сырой отчёт».
@@ -216,52 +222,70 @@ User says one of:
 
 6. **Follow-up**: user asks for details — use `jq` or `Read` on the JSON files in `/tmp/reconcile_<date>/`.
 
-6b. **Поставить якорь «+»** — в конце каждой успешной сверки, автоматически,
-   без отдельной просьбы. Найти последнюю транзакцию проверенного периода:
+7. **Apply certificate actions** — обязательная часть КАЖДОЙ сверки, в том числе планового
+   автозапуска. `reconcile.py` wrote `/tmp/reconcile_<date>/cert_actions.json` and a
+   `## 🎁 Сертификаты` report section.
 
-   ```funql
-   SELECT id, tks_order_id, tks_customer_name, comment FROM "fin"."transactions"
-   WHERE is_deleted = false
-     AND transaction_date >= '<prev_date> 21:00:00+00:00'::datetime
-     AND transaction_date <  '<date> 21:00:00+00:00'::datetime
-   ORDER BY transaction_date DESC LIMIT 1
-   ```
-
-   и записать в неё якорь через `mcp__ozma__transaction` update `fin.transactions`:
-   - комментарий пуст → `comment = '+'`;
-   - комментарий непустой → `comment = <существующий> + ', +'` (текст оператора не затирать);
-   - в комментарии уже есть якорь (`comment = '+'` или заканчивается на `, +'`) → пропустить.
-
-   Якорь ставится **только на одну строку** — последнюю проверенную. Остальные строки
-   периода не трогаем: «+» здесь — закладка «досюда проверено», а не отметка на каждой
-   транзакции. В отчёте пользователю написать одной строкой, куда встал якорь
-   (заказ + ФИО + дата), чтобы было видно, с чего пойдёт следующая сверка.
-
-7. **Apply certificate actions** (ONLY on explicit user confirmation). `reconcile.py`
-   wrote `/tmp/reconcile_<date>/cert_actions.json` and a `## 🎁 Сертификаты` report
-   section. Show that section and ask: «применить? (N комментариев, M ФИО, K слияний)».
-   On «да», for each item re-check then write via the OzmaDB MCP:
-   - **`comments[]`**: `mcp__ozma__funql_query` the current `comment` of `tx_id`. If it
-     already contains «автоматическое использование сертификата» (case-insensitive)
-     → skip. Otherwise `mcp__ozma__transaction` update `fin.transactions` id=`tx_id`,
+   **Записывать сразу, без подтверждения** (идемпотентно — перед записью перечитать комментарий):
+   - **`comments[]`** — «автоматическое использование сертификата». `mcp__ozma__funql_query` the
+     current `comment` of `tx_id`. If it already contains the tag (case-insensitive) → skip.
+     Otherwise `mcp__ozma__transaction` update `fin.transactions` id=`tx_id`,
      `comment = existing + ", " + tag` when existing is non-empty, else the tag alone.
-   - **`fio_fixes[]`**: `mcp__ozma__funql_query` `base.people` id=`person_id`. Only if the
-     current name still matches /Кэррот/ → `mcp__ozma__transaction` update `base.people`
+     Скрипт уже отобрал правильные строки:
+     - тег ставится на строку, где **счёт отправителя = Сертификат**, а не на нулевую/платёжную;
+     - только если у неё есть **пара** — платёжная строка того же клиента и продукта с
+       `used_certificate_amount` = сумме сертификата (сайт сам списал сертификат при оплате);
+     - **одиночное погашение** (`single_usages[]` — получатель сам применил сертификат при записи)
+       — это НЕ «авто», тег не ставить, даже если хочется.
+   - **`gift_comments[]`** — покупка сертификата в подарок (`is_certificate`, `tks_is_gift`, оплачено).
+     Тот же порядок записи, тег из `proposed_tag`:
+     - `tks_paper_certificate = false` → «серт, не шлем, электронный»;
+     - `tks_paper_certificate = true` → «СЕРТ подготовить бумажный и связаться с покупателем» —
+       такие отдельно перечислить в отчёте (пункт 4): команде надо подготовить сертификат.
+
+   **Только с подтверждением человека:**
+   - **`fio_fixes[]`** («Кэррот»): `mcp__ozma__funql_query` `base.people` id=`person_id`. Only if
+     the current name still matches /Кэррот/ → `mcp__ozma__transaction` update `base.people`
      id=`person_id` with `first_name` / `last_name` from the plan.
    - **`merges[]`** (confidence=high only; **confirm each one individually** — destructive):
      `mcp__ozma__run_action` `base/merge_two_contacts` with `{keep_id, dup_id}`
      (survivor = `keep_id`, the lower id; the other is soft-deleted).
-   - **`possible_duplicates[]`** and **`fraud_flags[]`**: report-only, never auto-written.
+
+   **Только в отчёт, никогда не записывать:** `possible_duplicates[]`, `fraud_flags[]`.
+   Анти-фрод = сертификат погасил не покупатель; скрипт флагует только сертификаты **дороже
+   1 500 ₽** — мелкие штатно передают друзьям.
+
    Report applied / skipped / failed counts.
+
+8. **Карточки участников оплат** (по ходу сверки, сразу при появлении — не откладывать в конец):
+   - **Кривое ФИО** — не-имя («От Любимых»), дательный падеж («Найденко Климу»), только имя без
+     фамилии, перепутанные имя/фамилия. Исправить самому в `base.people` по почте/телефону/
+     телеграму. Фамилию-догадку (выведена из почты или ника, не из документа) писать со знаком
+     вопроса: `Ярмак?`, имя — обычное. Совсем без зацепок — не выдумывать, спросить. Список правок
+     дать в отчёте: ссылка `https://ozma.gogol.school/views/crm/student_form?id=<id>`, было → стало,
+     откуда догадка.
+   - **Два имени в подарочной оплате** («Женя и Матвей», `tks_is_gift = true`) — это ОДИН
+     плательщик (люди думают, что так напишут «от кого» на сертификате). Плательщик — тот, чья почта
+     в `tks_email`. Вторую карточку и вторую заявку не заводить.
+   - **Мусорные контакты в карточке** (`base.communication_ways`: `tag@mail.ru`, `cooo@mail.ru`,
+     `vv@gg.com`, `test@…`, `+7 999 999 99 99`, `111…`) — удалить самому мягко (`is_deleted = true`).
+     Правдоподобные адреса не трогать, регистрационный контакт — только если он явный мусор.
+     Снимок в самой транзакции (`tks_email` / `tks_phone` / `tks_customer_name`) не править.
+     В отчёте перечислить, что удалено.
+
+9. **Маркер «+»** — обязательный последний шаг КАЖДОЙ сверки. Маркер один на всю таблицу:
+   найти ВСЕ строки `fin.transactions` с «+» в комментарии и снять с каждой (если кроме «+» ничего
+   нет — `comment = null`, иначе убрать «, +»). Затем поставить «+» на последнюю сверенную оплату
+   (самая поздняя по `tks_date_time` из охваченных, включая сегодняшние): пустой комментарий → «+»,
+   непустой → дописать «, +».
 
 ## What this skill does NOT do
 
-- Пишет в Озму без подтверждения ровно одну вещь — якорь «+» на последнюю
-  проверенную транзакцию (шаг 6b). Это закладка, а не финансовая правка.
-- Writes to Ozma ONLY for confirmed certificate actions (step 7): auto-usage
-  comments, «Кэррот» ФИО fixes, and high-confidence duplicate merges. Everything
-  else (level-1/2/3 discrepancies, anti-fraud flags, possible duplicates) is
-  surfaced read-only and resolved by the user.
+- Writes to Ozma ONLY: certificate comments (step 7, automatically), card fixes
+  (step 8, automatically), the «+» marker (step 9, automatically), and — after the
+  user's confirmation — «Кэррот» ФИО fixes and duplicate merges. Everything else
+  (level-1/2/3 discrepancies, anti-fraud flags, possible duplicates) is surfaced
+  read-only and resolved by the user.
 - Does NOT auto-fix non-certificate discrepancies — only surfaces them.
 - Does NOT parse provider responses into context — keep raw JSON in files, use `jq` on demand.
 
@@ -281,9 +305,6 @@ has a different value) or `missing_in_ozma` (Ozma has none). See the
 - `scripts/fetch_payments.py` — async parallel fetch of all 5 OzmaBot endpoints
 - `scripts/reconcile.py` — matching + markdown (levels 1–3)
 - `scripts/test_contacts.py` — unit tests for level-3 contact comparison
-- `scripts/test_ref_columns.py` — unit tests for int/`{id, pun}` reference columns
-- `scripts/test_pending.py` — unit tests for зависшие/брошенные pending-строки
-- `scripts/test_day_state.py` — unit tests for состояние дня и невыгруженные каналы
 - `references/endpoint-contracts.md` — full endpoint specs
 - `references/reconciliation-rules.md` — matching logic + account_id mapping
 - `references/status-normalization.md` — status maps

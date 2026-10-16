@@ -364,8 +364,47 @@ def _comment_has_tag(comment, tag) -> bool:
     return tag.lower() in (comment or "").lower()
 
 
+def _as_amount(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _paired_payment_row(usage_row, ozma_txs):
+    """The payment row the site created together with a cert-usage row.
+
+    When the site redeems a certificate at checkout it writes two rows: the
+    certificate row (account_from type «Сертификат») and a payment row of the
+    same customer/action with `used_certificate_amount` = certificate amount
+    (its own amount is 0 or the paid remainder). A cert-usage row WITHOUT such a
+    pair was applied by hand (typically a gift recipient enrolling with the
+    certificate) — that is not an auto-usage.
+    """
+    customer = _ref_id(usage_row.get("customer"))
+    action = _ref_id(usage_row.get("action"))
+    amount = _as_amount(usage_row.get("amount"))
+    if customer is None:
+        return None
+    fallback = None
+    for row in ozma_txs:
+        if row is usage_row or is_cert_usage(row):
+            continue
+        used = _as_amount(row.get("used_certificate_amount"))
+        if not used or used <= 0:
+            continue
+        if _ref_id(row.get("customer")) != customer:
+            continue
+        if action is not None and _ref_id(row.get("action")) not in (None, action):
+            continue
+        if amount is not None and abs(used - amount) < 0.01:
+            return row
+        fallback = fallback or row
+    return fallback
+
+
 def build_comment_actions(ozma_txs) -> list:
-    """Cert-usage rows whose comment lacks the tag → proposed comment writes."""
+    """Paired cert-usage rows whose comment lacks the tag → proposed comment writes."""
     out = []
     for row in ozma_txs:
         if not is_cert_usage(row):
@@ -373,11 +412,63 @@ def build_comment_actions(ozma_txs) -> list:
         cur = row.get("comment")
         if _comment_has_tag(cur, CERT_USAGE_TAG):
             continue
+        if _paired_payment_row(row, ozma_txs) is None:
+            continue
         out.append({
             "tx_id": _ref_id(row.get("id")),
             "account_from_name": row.get("account_from_name"),
             "current_comment": cur,
             "proposed_tag": CERT_USAGE_TAG,
+        })
+    return out
+
+
+def build_single_usages(ozma_txs) -> list:
+    """Cert-usage rows without a paired payment row: applied by hand, no tag (report-only)."""
+    out = []
+    for row in ozma_txs:
+        if not is_cert_usage(row):
+            continue
+        if _paired_payment_row(row, ozma_txs) is not None:
+            continue
+        out.append({
+            "tx_id": _ref_id(row.get("id")),
+            "amount": _as_amount(row.get("amount")),
+            "current_comment": row.get("comment"),
+        })
+    return out
+
+
+GIFT_E_TAG = "серт, не шлем, электронный"
+GIFT_PAPER_TAG = "СЕРТ подготовить бумажный и связаться с покупателем"
+_PAID_STATES = ("CONFIRMED", "AUTHORIZED", "SIGNED")
+
+
+def build_gift_comment_actions(ozma_txs) -> list:
+    """Paid gift-certificate purchases → «электронный» / «бумажный» comment writes.
+
+    `tks_paper_certificate` = покупатель выбрал бумажный сертификат: его надо
+    подготовить и связаться с покупателем; иначе сертификат электронный и
+    отправлять ничего не нужно.
+    """
+    out = []
+    for row in ozma_txs:
+        if is_cert_usage(row):
+            continue
+        if not (_as_bool(row.get("is_certificate")) and _as_bool(row.get("tks_is_gift"))):
+            continue
+        if row.get("tks_state") not in _PAID_STATES:
+            continue
+        cur = row.get("comment")
+        if _comment_has_tag(cur, GIFT_E_TAG) or _comment_has_tag(cur, GIFT_PAPER_TAG):
+            continue
+        paper = _as_bool(row.get("tks_paper_certificate"))
+        out.append({
+            "tx_id": _ref_id(row.get("id")),
+            "paper": paper,
+            "recipient": row.get("tks_gift_recipient"),
+            "current_comment": cur,
+            "proposed_tag": GIFT_PAPER_TAG if paper else GIFT_E_TAG,
         })
     return out
 
@@ -454,6 +545,9 @@ def _contact_dedup_keys(pid, people_by_id, comm_by_contact):
     return name_toks, emails, phones
 
 
+FRAUD_MIN_AMOUNT = 1500
+
+
 def build_dedup_and_fraud(ozma_txs, people_by_id, comm_by_contact):
     """For cert-usage rows where payer != certificate buyer:
       high confidence (shared phone/email) -> merge proposal,
@@ -488,6 +582,10 @@ def build_dedup_and_fraud(ozma_txs, people_by_id, comm_by_contact):
             possible_dups.append({"payer_id": payer, "buyer_id": buyer,
                                   "match_signals": ["name"], "confidence": "medium"})
         else:
+            # Certificates are routinely handed to friends; only big ones are worth a look.
+            amount = _as_amount(row.get("amount"))
+            if amount is not None and amount <= FRAUD_MIN_AMOUNT:
+                continue
             fraud.append({"tx_id": _ref_id(row.get("id")),
                           "cert_account": _ref_id(row.get("account_from")),
                           "payer_id": payer,
@@ -503,6 +601,8 @@ def build_cert_actions(ozma_txs, provider_txs, people_by_id, comm_by_contact) ->
         ozma_txs, people_by_id, comm_by_contact)
     return {
         "comments": build_comment_actions(ozma_txs),
+        "gift_comments": build_gift_comment_actions(ozma_txs),
+        "single_usages": build_single_usages(ozma_txs),
         "fio_fixes": build_fio_fixes(ozma_txs, provider_txs, people_by_id),
         "merges": merges,
         "possible_duplicates": possible_dups,
@@ -513,18 +613,29 @@ def build_cert_actions(ozma_txs, provider_txs, people_by_id, comm_by_contact) ->
 def render_cert_section(plan: dict) -> list:
     """Markdown lines for the 🎁 Сертификаты section."""
     c = plan["comments"]
+    g = plan.get("gift_comments", [])
+    s = plan.get("single_usages", [])
     f = plan["fio_fixes"]
     m = plan["merges"]
     pd = plan["possible_duplicates"]
     fr = plan["fraud_flags"]
     lines = ["", "## 🎁 Сертификаты", ""]
-    if not any((c, f, m, pd, fr)):
+    if not any((c, g, s, f, m, pd, fr)):
         lines.append("_Сертификатных действий нет._")
         return lines
     if c:
         lines.append(f"### Комментарии к авто-использованию ({len(c)})")
         for a in c:
             lines.append(f"- tx {a['tx_id']} ({a['account_from_name']}): + «{a['proposed_tag']}»")
+    if g:
+        lines.append(f"### Подарочные сертификаты — комментарии ({len(g)})")
+        for a in g:
+            who = f", получатель {a['recipient']}" if a.get("recipient") else ""
+            lines.append(f"- tx {a['tx_id']}{who}: + «{a['proposed_tag']}»")
+    if s:
+        lines.append(f"### Погашены вручную, без пары — комментарий не ставим ({len(s)})")
+        for a in s:
+            lines.append(f"- tx {a['tx_id']}")
     if f:
         lines.append(f"### Правка ФИО «Кэррот» ({len(f)})")
         for a in f:
@@ -1062,12 +1173,16 @@ def _render_advisory(level1: Dict, contacts: Dict, cert: Optional[dict],
         advisory.append(f"- Контакты mismatch ({n_c_mismatch}): значение провайдера не найдено среди контактов покупателя — проверить, не другой ли это человек / не сменились ли данные / корректность ФИО.")
     if cert is not None:
         n_cc = len(cert["comments"])
+        n_gc = len(cert.get("gift_comments", []))
         n_ff = len(cert["fio_fixes"])
         n_mg = len(cert["merges"])
         n_fr = len(cert["fraud_flags"])
-        if n_cc or n_ff or n_mg:
-            advisory.append(f"- 🎁 Сертификаты: предложено {n_cc} комментариев, "
-                            f"{n_ff} правок ФИО, {n_mg} слияний — применить после подтверждения (шаг 7 SKILL.md).")
+        if n_cc or n_gc:
+            advisory.append(f"- 🎁 Сертификаты: {n_cc} комментариев «автоматическое использование», "
+                            f"{n_gc} комментариев к подарочным — записать сразу, без подтверждения (шаг 7 SKILL.md).")
+        if n_ff or n_mg:
+            advisory.append(f"- 🎁 Сертификаты: {n_ff} правок ФИО, {n_mg} слияний — "
+                            f"только после подтверждения (шаг 7 SKILL.md).")
         if n_fr:
             advisory.append(f"- ⚠️ Анти-фрод: {n_fr} погашений сертификата чужим лицом — проверить вручную.")
     if not advisory:

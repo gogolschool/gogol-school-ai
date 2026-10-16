@@ -48,14 +48,20 @@ class TestCommentHasTag(unittest.TestCase):
 
 
 class TestBuildCommentActions(unittest.TestCase):
-    def _usage(self, tx_id, comment=None):
+    def _usage(self, tx_id, comment=None, customer=10, action=500, amount=15600):
         return {"id": tx_id, "is_certificate_payment": True,
-                "account_from_type": "Сертификат",
+                "account_from_type": "Сертификат", "customer": customer,
+                "action": action, "amount": amount,
                 "account_from_name": "Подарок", "comment": comment}
+
+    def _payment(self, tx_id, used, customer=10, action=500):
+        return {"id": tx_id, "is_certificate_payment": False,
+                "account_from_type": "Банковский счет", "customer": customer,
+                "action": action, "amount": 33400, "used_certificate_amount": used}
 
     def test_proposes_for_empty_comment(self):
         from reconcile import build_comment_actions
-        out = build_comment_actions([self._usage(38269, None)])
+        out = build_comment_actions([self._payment(38268, 15600), self._usage(38269, None)])
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["tx_id"], 38269)
         self.assertEqual(out[0]["proposed_tag"], CERT_USAGE_TAG)
@@ -70,6 +76,74 @@ class TestBuildCommentActions(unittest.TestCase):
         from reconcile import build_comment_actions
         row = {"id": 2, "is_certificate_payment": False, "account_from_type": "Банковский счет"}
         self.assertEqual(build_comment_actions([row]), [])
+
+    def test_single_usage_not_tagged(self):
+        # Recipient applied the certificate by hand: no paired payment row → no tag.
+        from reconcile import build_comment_actions, build_single_usages
+        rows = [self._usage(39065, None, customer=27199, amount=1500)]
+        self.assertEqual(build_comment_actions(rows), [])
+        single = build_single_usages(rows)
+        self.assertEqual([a["tx_id"] for a in single], [39065])
+
+    def test_pair_must_be_same_customer(self):
+        from reconcile import build_comment_actions
+        rows = [self._payment(1, 15600, customer=99), self._usage(2, None, customer=10)]
+        self.assertEqual(build_comment_actions(rows), [])
+
+    def test_zero_amount_payment_pairs(self):
+        # Tinkoff row 0 ₽ with used_certificate_amount = nominal (tx 40476/40477).
+        from reconcile import build_comment_actions, build_single_usages
+        pay = self._payment(40476, 1500, customer=23811, action=12306)
+        pay["amount"] = 0
+        rows = [pay, self._usage(40477, None, customer=23811, action=12306, amount=1500)]
+        self.assertEqual([a["tx_id"] for a in build_comment_actions(rows)], [40477])
+        self.assertEqual(build_single_usages(rows), [])
+
+    def test_ref_objects_pair(self):
+        from reconcile import build_comment_actions
+        pay = self._payment(1, 15600, customer={"id": 10, "pun": "x"}, action={"id": 500, "pun": "y"})
+        use = self._usage(2, None, customer={"id": 10, "pun": "x"}, action={"id": 500, "pun": "y"})
+        self.assertEqual([a["tx_id"] for a in build_comment_actions([pay, use])], [2])
+
+
+class TestGiftComments(unittest.TestCase):
+    def _gift(self, tx_id, paper=False, state="CONFIRMED", comment=None, gift=True):
+        return {"id": tx_id, "is_certificate": True, "is_certificate_payment": False,
+                "account_from_type": "Банковский счет", "tks_is_gift": gift,
+                "tks_paper_certificate": paper, "tks_state": state,
+                "tks_gift_recipient": "Ватутина Анастасия", "comment": comment}
+
+    def test_electronic(self):
+        from reconcile import build_gift_comment_actions, GIFT_E_TAG
+        out = build_gift_comment_actions([self._gift(40688)])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["proposed_tag"], GIFT_E_TAG)
+        self.assertEqual(GIFT_E_TAG, "серт, не шлем, электронный")
+
+    def test_paper(self):
+        from reconcile import build_gift_comment_actions, GIFT_PAPER_TAG
+        out = build_gift_comment_actions([self._gift(40570, paper=True)])
+        self.assertEqual(out[0]["proposed_tag"], GIFT_PAPER_TAG)
+        self.assertTrue(out[0]["paper"])
+
+    def test_pending_skipped(self):
+        from reconcile import build_gift_comment_actions
+        self.assertEqual(build_gift_comment_actions([self._gift(40687, state="Ожидается оплата")]), [])
+
+    def test_not_gift_skipped(self):
+        from reconcile import build_gift_comment_actions
+        self.assertEqual(build_gift_comment_actions([self._gift(1, gift=False)]), [])
+
+    def test_already_tagged_skipped(self):
+        from reconcile import build_gift_comment_actions
+        rows = [self._gift(1, comment="Серт, не шлем, электронный"),
+                self._gift(2, paper=True, comment="связалась, СЕРТ подготовить бумажный и связаться с покупателем")]
+        self.assertEqual(build_gift_comment_actions(rows), [])
+
+    def test_existing_comment_kept_in_plan(self):
+        from reconcile import build_gift_comment_actions
+        out = build_gift_comment_actions([self._gift(40672, paper=True, comment="связалсь")])
+        self.assertEqual(out[0]["current_comment"], "связалсь")
 
 
 class TestBuildFioFixes(unittest.TestCase):
@@ -196,6 +270,17 @@ class TestDedupAndFraud(unittest.TestCase):
         self.assertEqual(fr[0]["tx_id"], 700)
         self.assertEqual(fr[0]["cert_account"], 27246)
 
+    def test_small_certificate_not_flagged(self):
+        # Сертификаты до 1500 ₽ штатно передают друзьям (tx 39584, 1050 ₽) — не флагать.
+        from reconcile import build_dedup_and_fraud
+        people = {10: {"first_name": "Ксения"}, 26: {"first_name": "Екатерина"}}
+        small = dict(self._usage(10, 26, tx_id=39584), amount=1050)
+        edge = dict(self._usage(10, 26, tx_id=2), amount=1500)
+        self.assertEqual(build_dedup_and_fraud([small], people, {})[2], [])
+        self.assertEqual(build_dedup_and_fraud([edge], people, {})[2], [])
+        big = dict(self._usage(10, 26, tx_id=3), amount=18000)
+        self.assertEqual(len(build_dedup_and_fraud([big], people, {})[2]), 1)
+
     def test_pair_deduplicated_across_rows(self):
         from reconcile import build_dedup_and_fraud
         people = {10: {"first_name": "Олег"}, 26: {"first_name": "Евгения"}}
@@ -207,12 +292,17 @@ class TestDedupAndFraud(unittest.TestCase):
 class TestBuildCertActionsAndRender(unittest.TestCase):
     def test_assembles_all_buckets(self):
         from reconcile import build_cert_actions
-        ozma = [{"id": 38269, "is_certificate_payment": True,
+        ozma = [{"id": 38268, "is_certificate_payment": False,
+                 "account_from_type": "Банковский счет", "customer": 10,
+                 "amount": 0, "used_certificate_amount": 1500},
+                {"id": 38269, "is_certificate_payment": True,
                  "account_from_type": "Сертификат", "account_from": 28330,
                  "account_from_name": "Сертификат на программу", "comment": None,
-                 "customer": 10, "cert_buyer_id": 10}]
+                 "customer": 10, "cert_buyer_id": 10, "amount": 1500}]
         plan = build_cert_actions(ozma, [], {}, {})
         self.assertEqual(len(plan["comments"]), 1)
+        self.assertIn("gift_comments", plan)
+        self.assertIn("single_usages", plan)
         self.assertIn("fio_fixes", plan)
         self.assertIn("merges", plan)
         self.assertIn("possible_duplicates", plan)
