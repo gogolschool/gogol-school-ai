@@ -37,11 +37,16 @@ WD_FULL = ["понедельник", "вторник", "среда", "четве
 
 CLAUDE = "/home/agentbot/.nvm/versions/node/v20.20.2/bin/claude"
 NODE_BIN = "/home/agentbot/.nvm/versions/node/v20.20.2/bin"
-LLM_TIMEOUT = 60
+MODEL = "sonnet"         # haiku путал «одна задача на две строки» и не понимал «и эту удали»
+LLM_TIMEOUT = 120
 TITLE_MAX = 80
 SOON_DAYS = 3            # «ближайшие N дней» в сводке
 MSG_KEEP_DAYS = 30       # сколько помним, какие страницы стоят за номерами в сообщении бота
 FULL_LIST_MAX = 40       # строк в «что у меня»
+CONTEXT_HOURS = 18       # сообщение без ответа может править задачи из последних сообщений бота…
+CONTEXT_MSGS = 3         # …не старше N часов и не больше N штук
+BLOCK_KEYS = "ABC"
+LINK_KEY = "L"           # задачи, на которые сотрудник прислал ссылку Notion
 
 EDIT_HELP = ("Можно так: «срок на среду», «готово», «удали», «переименуй в …», «срочно». "
              "Если в сообщении несколько задач — с номером: «2 готово».")
@@ -91,7 +96,7 @@ def parse_users(raw):
 # ---------- LLM (haiku без инструментов) ----------
 
 def llm(prompt):
-    """Один короткий вызов haiku. Возвращает stdout или кидает исключение."""
+    """Один вызов модели без инструментов. Возвращает stdout или кидает исключение."""
     env = dict(os.environ)
     env["HOME"] = "/home/agentbot"
     env["PATH"] = NODE_BIN + ":" + env.get("PATH", "")
@@ -102,7 +107,7 @@ def llm(prompt):
             env[k] = proxy
         else:
             env.pop(k, None)
-    cmd = [CLAUDE, "-p", prompt, "--model", "haiku", "--tools", "", "--strict-mcp-config",
+    cmd = [CLAUDE, "-p", prompt, "--model", MODEL, "--tools", "", "--strict-mcp-config",
            "--disable-slash-commands", "--no-session-persistence"]
     r = subprocess.run(cmd, cwd="/tmp", env=env, capture_output=True, text=True, timeout=LLM_TIMEOUT)
     if r.returncode != 0:
@@ -136,19 +141,24 @@ PARSE_PROMPT = """Ты помощник, который превращает з�
   "priority": "Срочно" | "Высокий" | null}}
 
 Правила:
-- несколько независимых дел — несколько элементов; одно дело с подробностями — один элемент;
+{task_rules}
+
+Сообщения:
+<<<
+{text}
+>>>"""
+
+TASK_RULES = """- несколько независимых дел — несколько элементов; одно дело с подробностями — один элемент;
+- несколько строк про одно дело — ОДНА задача, даже без знаков препинания: вторая строка уточняет первую
+  («проверить пробные занятия / нужно ли согласовать новые» = «Проверить пробные занятия: нужно ли
+  согласовать новые»); делить только явно разные дела — нумерованный список, разные темы или люди;
 - срок только если он назван: «завтра», «в пятницу», «до 20-го», «к концу недели» (= ближайшая пятница);
   «до пятницы» = ближайшая пятница, если сегодня пятница — сегодня; «на следующей неделе» без дня = понедельник;
   ничего не сказано про срок — null, не выдумывай;
 - time — только если названо время;
 - from — имя из текста («Катя попросила…») или из пометки «Переслано от»; иначе null;
 - priority «Срочно» — если «срочно», «горит», «asap», «прямо сейчас»; «Высокий» — если «важно», «в приоритете»; иначе null;
-- пиши по-русски, сохраняй имена и названия как в тексте.
-
-Сообщения:
-<<<
-{text}
->>>"""
+- пиши по-русски, сохраняй имена и названия как в тексте."""
 
 
 def _valid_date(s):
@@ -187,7 +197,7 @@ def parse_tasks(text, today=None):
     """Текст пачки → список задач. Не падает: при любой ошибке — одна задача из начала текста."""
     today = today or now_msk().date()
     prompt = PARSE_PROMPT.format(today=today.isoformat(), weekday=WD_FULL[today.weekday()],
-                                 calendar=calendar_hint(today), text=text)
+                                 calendar=calendar_hint(today), task_rules=TASK_RULES, text=text)
     try:
         data = extract_json(llm(prompt))
         if isinstance(data, dict):
@@ -379,35 +389,71 @@ def digest_text(items, today, board=None, full=False):
     return "\n".join(lines), numbered
 
 
-# ---------- правки ответом ----------
+# ---------- правки: что человек хочет — новые задачи или поправить записанные ----------
 
-EDIT_PROMPT = """Сотрудник ответил на сообщение бота со списком задач и просит что-то поменять.
+UNDERSTAND_PROMPT = """Ты — Тейлор, бот-записная книжка задач. Сотрудник школы пишет тебе в личку. Пойми, чего он хочет:
+записать НОВЫЕ задачи или ПОПРАВИТЬ уже записанные (закрыть, удалить, перенести срок, переименовать,
+поменять приоритет, склеить несколько в одну). В одном сообщении может быть и то и другое.
 Сегодня {today} ({weekday}), часовой пояс Москва. Ближайшие даты:
 {calendar}
 
-Задачи в сообщении (номер. название — срок):
-{items}
-
-Ответ сотрудника:
+Записанные задачи, о которых может идти речь (ключ задачи = буква блока + номер строки, например A2):
+{blocks}
+{reply_note}
+Сообщение сотрудника:
 <<<
 {text}
 >>>
 
-Верни ТОЛЬКО JSON-объект:
-{{"targets": [номера задач] — пусто, если номер не назван и по смыслу не понять какая,
-  "action": "deadline" | "done" | "archive" | "rename" | "priority" | "unknown",
-  "value": для deadline — "YYYY-MM-DD" или "YYYY-MM-DDTHH:MM"; для rename — новое название;
-           для priority — "Срочно" | "Высокий" | "Средний" | "Низкий"; иначе null}}
-Правила: «готово/сделала/закрой» = done; «удали/не надо/отмена/в архив» = archive;
-«перенеси/срок/на среду/до 20-го» = deadline; «все»/«обе» = все номера; если задача одна — targets [1]."""
+Верни ТОЛЬКО JSON-объект, без пояснений:
+{{"edits": [{{"targets": ["A2", ...], "action": "done" | "archive" | "deadline" | "rename" | "priority" | "merge",
+             "value": см. ниже}}],
+  "tasks": [{{"title": "...", "deadline": "YYYY-MM-DD" или null, "time": "HH:MM" или null,
+             "from": "..." или null, "priority": "Срочно" | "Высокий" | null}}],
+  "question": null или короткий вопрос, если правда непонятно, о какой задаче речь}}
+
+Правки:
+- правка — когда речь про уже записанное: «готово», «2 готово», «удали», «и эту удали», «убери эту задачу»,
+  «перенеси на среду», «переименуй в …», «это одна задача», «ты записала это как 2 задачи, а это одна»;
+  обращение «Тейлор, …» смысла не меняет;
+- несколько правок в одном сообщении («1 готово / 2 готово / 3 готово», «1 готово, 3 на пятницу») — несколько
+  элементов edits или один с несколькими targets;
+- номер без буквы — из блока A (это сообщение, на которое ответили, или самое свежее); номер — это
+  порядковый номер строки в блоке, а не цифры из названия задачи;
+- done: «готово», «сделала», «сделано», «закрой»; archive: «удали», «убери», «не надо», «отмена», «в архив»,
+  «записала лишнее / по ошибке»;
+- deadline: value "YYYY-MM-DD" или "YYYY-MM-DDTHH:MM"; rename: value — новое название;
+  priority: value "Срочно" | "Высокий" | "Средний" | "Низкий";
+- merge — «это одна задача», «склей», «объедини»: targets — склеиваемые задачи (если не названы — все строки
+  блока A), value — общее название как действие, до 80 символов, без срока;
+- «эту», «её», «вот эту» в ответе на сообщение с одной задачей — эта задача; ссылка на задачу Notion — блок L;
+- комментарий о том, как бот записал задачи (жалоба, уточнение, «ты неправильно записала»), — это правка
+  или вопрос, НИКОГДА не новая задача.
+
+Новые задачи (tasks) — поручения и дела, которых нет в блоках. Пересланное чужое сообщение — почти всегда
+новая задача. title — коротко, как действие («Позвонить …», «Отправить …»), до 80 символов, без срока и дат.
+{task_rules}
+
+Не уверена, к какой задаче правка, — question, а edits пустой. Ничего не выдумывай. Если ни правки, ни задачи
+нет (просто «спасибо», «ок») — всё пустое."""
+
+REPLY_NOTE = ("\nСотрудник ОТВЕТИЛ на сообщение A — почти наверняка это правка задач из него; "
+              "новую задачу создавай, только если в тексте явно новое поручение.\n")
 
 _NUM = r"\d{1,2}(?:\s*(?:,|и)\s*\d{1,2})*"
 _DONE = r"(?:готово|сделала?|сделано|выполнено|закрыла?|закрой|закрыть|done)"
 _ARCH = r"(?:удали(?:ть)?|не надо|отмена|отмени(?:ть)?|в архив|архив)"
+_NAME = re.compile(r"^\s*(тейлор|свифт)\w*[\s,!:.\-—]*", re.I)
+_PAGE_ID = re.compile(r"(?:notion\.(?:so|site)|app\.notion\.com)/\S*?([0-9a-f]{32})(?![0-9a-f])", re.I)
 
 
 def _nums(s):
     return [int(x) for x in re.findall(r"\d{1,2}", s or "")]
+
+
+def strip_name(text):
+    """«Тейлор, убери эту задачу» → «убери эту задачу»."""
+    return _NAME.sub("", text or "", count=1).strip()
 
 
 def quick_edit(text):
@@ -420,27 +466,57 @@ def quick_edit(text):
     return None
 
 
-def parse_edit(text, items, today=None):
-    q = quick_edit(text)
-    if q:
-        return q
+def make_block(key, items, mid=None, label=""):
+    return {"key": key, "mid": mid, "label": label, "items": items}
+
+
+def _block_text(b):
+    head = "Блок %s%s:" % (b["key"], (" — " + b["label"]) if b.get("label") else "")
+    rows = ["%d. %s — %s" % (i, it["title"], fmt_date(it.get("deadline")) or "без срока")
+            for i, it in enumerate(b["items"], 1)]
+    return "\n".join([head] + rows)
+
+
+def _norm_edit(d):
+    if not isinstance(d, dict):
+        return None
+    t = d.get("targets") or []
+    if not isinstance(t, list):
+        t = [t]
+    return {"targets": [str(x).strip().upper() for x in t if str(x).strip()],
+            "action": d.get("action") or "unknown", "value": d.get("value")}
+
+
+def understand(text, blocks, today=None, is_reply=False):
+    """Одно сообщение → {"edits", "tasks", "question"}. Кидает исключение, если модель не ответила JSON."""
     today = today or now_msk().date()
-    listing = "\n".join("%d. %s — %s" % (i, it["title"], fmt_date(it.get("deadline")) or "без срока")
-                        for i, it in enumerate(items, 1))
-    prompt = EDIT_PROMPT.format(today=today.isoformat(), weekday=WD_FULL[today.weekday()],
-                                calendar=calendar_hint(today), items=listing, text=text)
-    try:
-        d = extract_json(llm(prompt))
-        if not isinstance(d, dict):
-            raise ValueError("не объект")
-        targets = d.get("targets") or []
-        if not isinstance(targets, list):
-            targets = [targets]
-        return {"targets": [int(x) for x in targets if str(x).isdigit()],
-                "action": d.get("action") or "unknown", "value": d.get("value")}
-    except Exception as e:
-        print("tasks edit parse err:", type(e).__name__, str(e)[:200], flush=True)
-        return {"targets": [], "action": "unknown", "value": None}
+    prompt = UNDERSTAND_PROMPT.format(
+        today=today.isoformat(), weekday=WD_FULL[today.weekday()], calendar=calendar_hint(today),
+        blocks="\n\n".join(_block_text(b) for b in blocks) or "(записанных задач рядом нет)",
+        reply_note=REPLY_NOTE if is_reply else "", task_rules=TASK_RULES, text=text)
+    d = extract_json(llm(prompt))
+    if isinstance(d, list):          # модель вернула просто список задач
+        d = {"tasks": d}
+    if not isinstance(d, dict):
+        raise ValueError("не объект")
+    edits = [e for e in (_norm_edit(x) for x in (d.get("edits") or [])) if e]
+    new = [t for t in (normalize_task(x) for x in (d.get("tasks") or [])) if t]
+    q = d.get("question")
+    return {"edits": edits, "tasks": new, "question": q.strip() if isinstance(q, str) and q.strip() else None}
+
+
+def resolve(target, blocks):
+    """'A2' / '2' / 2 → (block, index) или None. Номер без буквы — из первого блока."""
+    s = str(target).strip().upper()
+    m = re.fullmatch(r"([A-Z]?)\s*(\d{1,2})", s)
+    if not m or not blocks:
+        return None
+    key = m.group(1) or blocks[0]["key"]
+    for b in blocks:
+        if b["key"] == key:
+            n = int(m.group(2))
+            return (b, n - 1) if 1 <= n <= len(b["items"]) else None
+    return None
 
 
 def edit_props(action, value):
@@ -458,7 +534,7 @@ def edit_props(action, value):
     if action == "rename":
         v = re.sub(r"\s+", " ", str(value or "")).strip()[:TITLE_MAX]
         if v:
-            return {"Набор": {"title": [{"text": {"content": v}}]}}, "Переименовала в «%s»" % v
+            return {"Набор": {"title": [{"text": {"content": v}}]}}, "Переименовала"
         return None, "Не поняла новое название."
     if action == "priority":
         if value in PRIORITIES:
@@ -467,35 +543,83 @@ def edit_props(action, value):
     return None, "Не поняла, что поменять. " + EDIT_HELP
 
 
+def _apply_props(item, props):
+    update_page(item["id"], props)
+    if "Дедлайн" in props:
+        item["deadline"] = props["Дедлайн"]["date"]["start"]
+    if "Набор" in props:
+        item["title"] = props["Набор"]["title"][0]["text"]["content"]
+
+
+def _bullets(phrase, items):
+    return "\n".join([phrase + " ✨"] + ["• " + _link(it) for it in items])
+
+
+def _merge(picked, value):
+    """Склейка: первая задача остаётся (новое название, самый ранний срок), остальные — в архив."""
+    keep, rest = picked[0], picked[1:]
+    title = re.sub(r"\s+", " ", str(value or "")).strip()[:TITLE_MAX] or keep["title"]
+    props = {"Набор": {"title": [{"text": {"content": title}}]}}
+    dls = sorted(it["deadline"] for it in picked if it.get("deadline"))
+    if dls and not keep.get("deadline"):
+        props["Дедлайн"] = {"date": {"start": dls[0]}}
+    _apply_props(keep, props)
+    for it in rest:
+        update_page(it["id"], {"Статус": {"status": {"name": "Архив"}}})
+    return "Склеила в одну ✨\n• " + _link(keep)
+
+
+def run_edits(edits, blocks):
+    """Применить правки к задачам из блоков (items меняются на месте). → (строки ответа, была ли ошибка)."""
+    out = []
+    for e in edits:
+        picked, seen = [], set()
+        for t in e["targets"]:
+            r = resolve(t, blocks)
+            if r and id(r[0]["items"][r[1]]) not in seen:
+                seen.add(id(r[0]["items"][r[1]]))
+                picked.append(r[0]["items"][r[1]])
+        if not picked and blocks and len(blocks[0]["items"]) == 1 and e["action"] != "merge":
+            picked = [blocks[0]["items"][0]]
+        if e["action"] == "merge" and not picked and blocks:
+            picked = list(blocks[0]["items"])
+        if not picked:
+            out.append(html.escape("Какую задачу поправить? Напиши с номером, например «2 готово».", quote=False))
+            continue
+        try:
+            if e["action"] == "merge":
+                if len(picked) < 2:
+                    out.append("Тут одна задача — склеивать нечего ✨")
+                    continue
+                out.append(_merge(picked, e["value"]))
+                continue
+            props, phrase = edit_props(e["action"], e["value"])
+            if props is None:
+                out.append(html.escape(phrase, quote=False))
+                continue
+            for it in picked:
+                _apply_props(it, props)
+            out.append(_bullets(html.escape(phrase, quote=False), picked))
+        except Exception as ex:
+            print("tasks edit notion err:", type(ex).__name__, str(ex)[:300], flush=True)
+            out.append("⚠️ Не достучалась до Notion — повтори правку через пару минут.")
+    return out
+
+
 def apply_edit(text, items, today=None):
-    """Правка задач из одного сообщения бота. → (ответ, обновлённые items)."""
-    e = parse_edit(text, items, today)
-    targets = [n for n in e["targets"] if 1 <= n <= len(items)]
-    if not targets:
-        if len(items) == 1:
-            targets = [1]
-        elif e["action"] != "unknown":
-            return ("Какую задачу — %s? Ответь с номером, например «%d %s»." % (
-                ", ".join(str(i) for i in range(1, len(items) + 1)), 1,
-                {"done": "готово", "archive": "удали"}.get(e["action"], "срок на пятницу"))), items
-    props, phrase = edit_props(e["action"], e["value"])
-    if props is None:
-        return phrase, items
-    for n in targets:
-        update_page(items[n - 1]["id"], props)
-        if "Дедлайн" in props:
-            items[n - 1]["deadline"] = props["Дедлайн"]["date"]["start"]
-        if "Набор" in props:
-            items[n - 1]["title"] = props["Набор"]["title"][0]["text"]["content"]
-    which = "" if len(items) == 1 else " (%s)" % ", ".join(str(n) for n in sorted(set(targets)))
-    return phrase + which + " ✨", items
+    """Ответ на сообщение бота с задачами. → (html-ответ, обновлённые items)."""
+    reply, _ = process({}, None, text, [make_block("A", items)], today=today, is_reply=True)
+    return reply, items
 
 
 # ---------- состояние ----------
 
-def remember(state, message_id, items):
+def remember(state, message_id, items, uid=None, kind=None):
     msgs = state.setdefault("msgs", {})
-    msgs[str(message_id)] = {"ts": time.time(),
+    old = msgs.get(str(message_id)) or {}
+    msgs[str(message_id)] = {"ts": old.get("ts") or time.time(),
+                             "uid": uid if uid is not None else old.get("uid"),
+                             "kind": kind or old.get("kind"),
                              "items": [{k: it.get(k) for k in ("id", "url", "title", "deadline")}
                                        for it in items]}
     cutoff = time.time() - MSG_KEEP_DAYS * 86400
@@ -508,18 +632,108 @@ def recall(state, message_id):
     return m["items"] if m else None
 
 
+KIND_LABEL = {"digest": "утренняя сводка", "list": "список «что у меня»", "confirm": "подтверждение «Записала»"}
+
+
+def recent_blocks(state, uid, only_user=False, now_ts=None):
+    """Последние сообщения бота с задачами этому человеку — контекст для сообщения без ответа.
+    Старые записи без uid берём, только если человек с задачами один (only_user)."""
+    now_ts = now_ts or time.time()
+    rows = [(v["ts"], mid, v) for mid, v in state.get("msgs", {}).items()
+            if v.get("items") and now_ts - v.get("ts", 0) <= CONTEXT_HOURS * 3600
+            and (v.get("uid") == uid or (v.get("uid") is None and only_user))]
+    rows.sort(key=lambda r: r[0], reverse=True)
+    out = []
+    for key, (ts, mid, v) in zip(BLOCK_KEYS, rows[:CONTEXT_MSGS]):
+        label = "%s, %s" % (KIND_LABEL.get(v.get("kind"), "сообщение бота"),
+                            datetime.datetime.fromtimestamp(ts, MSK).strftime("%d.%m %H:%M"))
+        if key == BLOCK_KEYS[0]:
+            label += ", самое свежее"
+        out.append(make_block(key, v["items"], mid=mid, label=label))
+    return out
+
+
+def page_ids(text):
+    return [m.group(1).lower() for m in _PAGE_ID.finditer(text or "")]
+
+
+def link_block(state, text):
+    """Ссылки на задачи Notion в тексте → блок L (сначала ищем в памяти, потом спрашиваем Notion)."""
+    ids, items = page_ids(text), []
+    if not ids:
+        return None
+    known = {}
+    for v in state.get("msgs", {}).values():
+        for it in v.get("items", []):
+            known[(it.get("id") or "").replace("-", "")] = it
+    for pid in dict.fromkeys(ids):
+        it = known.get(pid)
+        if it is None:
+            try:
+                p = notion("GET", "/pages/" + pid)
+                if (p.get("parent") or {}).get("database_id", "").replace("-", "") != TASKS_DB:
+                    continue
+                pr = p.get("properties", {})
+                title = "".join(x.get("plain_text", "") for x in (pr.get("Набор", {}).get("title") or []))
+                it = {"id": p["id"], "url": p.get("url") or "", "title": title.strip() or "Без названия",
+                      "deadline": ((pr.get("Дедлайн") or {}).get("date") or {}).get("start")}
+            except Exception as e:
+                print("tasks link err:", type(e).__name__, str(e)[:200], flush=True)
+                continue
+        items.append(dict(it))
+    return make_block(LINK_KEY, items, label="задачи по ссылкам из сообщения") if items else None
+
+
 # ---------- сценарии ----------
 
-def capture(state, notion_user, text, now=None):
-    """Пачка → задачи в Notion. → (html-ответ, items) ; items=None, если ушло в pending."""
-    now = now or now_msk()
-    tasks = parse_tasks(text, now.date())
+def _create(state, notion_user, tasks, text, now):
     try:
-        items = [create_page(t, notion_user, text, now) for t in tasks]
+        return [create_page(t, notion_user, text, now) for t in tasks]
     except Exception as e:
         print("tasks notion err:", type(e).__name__, str(e)[:300], flush=True)
         state.setdefault("pending", []).append(
             {"notion": notion_user, "text": text, "tasks": tasks, "ts": time.time(), "at": now.isoformat()})
+        return None
+
+
+def process(state, notion_user, text, blocks, now=None, today=None, is_reply=False):
+    """Сообщение (пачка) → правки задач из blocks и/или новые задачи.
+    blocks меняются на месте (бот перезапоминает их по mid). → (html-ответ, новые items или None)."""
+    now = now or now_msk()
+    today = today or now.date()
+    blocks = [b for b in blocks if b and b.get("items")]
+    text = strip_name(text) if is_reply else text
+    q = quick_edit(text) if is_reply and len(blocks) == 1 else None
+    if q:
+        u = {"edits": [q], "tasks": [], "question": None}
+    else:
+        try:
+            u = understand(text, blocks, today, is_reply)
+        except Exception as e:
+            print("tasks understand err:", type(e).__name__, str(e)[:200], flush=True)
+            if is_reply or not notion_user:
+                return "Не поняла, что поменять. " + html.escape(EDIT_HELP, quote=False), None
+            u = {"edits": [], "tasks": [fallback_task(text)], "question": None}   # задачу не теряем
+    parts = run_edits(u["edits"], blocks) if u["edits"] else []
+    items = None
+    if u["tasks"] and notion_user:
+        items = _create(state, notion_user, u["tasks"], text, now)
+        parts.append(confirm_text(items) if items is not None
+                     else "Записала себе, в Notion внесу, как он оживёт ✨")
+    if u["question"]:
+        parts.append(html.escape(u["question"], quote=False))
+    if not parts:
+        if not is_reply:
+            return "", None           # «спасибо», «ок» — молчим
+        parts.append("Не поняла, что сделать. " + html.escape(EDIT_HELP, quote=False))
+    return "\n\n".join(parts), items
+
+
+def capture(state, notion_user, text, now=None):
+    """Пачка без контекста → задачи в Notion. → (html-ответ, items) ; items=None, если ушло в pending."""
+    now = now or now_msk()
+    items = _create(state, notion_user, parse_tasks(text, now.date()), text, now)
+    if items is None:
         return "Записала себе, в Notion внесу, как он оживёт ✨", None
     return confirm_text(items), items
 

@@ -259,9 +259,13 @@ TWO = [{"id": "p1", "url": "u", "title": "А", "deadline": None},
        {"id": "p2", "url": "u", "title": "Б", "deadline": "2026-10-16"}]
 
 
+def edits_json(edits, tasks_=None, question=None):
+    return json.dumps({"edits": edits, "tasks": tasks_ or [], "question": question}, ensure_ascii=False)
+
+
 def test_apply_done_single_without_number(monkeypatch, fake_notion):
     reply, _ = tasks.apply_edit("готово", [dict(x) for x in ONE], TODAY)
-    assert reply == "Закрыла ✨"
+    assert reply == 'Закрыла ✨\n• <a href="u">А</a>'
     assert fake_notion == [("PATCH", "/pages/p1", {"properties": {"Статус": {"status": {"name": "Готово"}}}})]
 
 
@@ -273,38 +277,40 @@ def test_apply_archive_never_deletes(monkeypatch, fake_notion):
 
 def test_apply_asks_which(monkeypatch, fake_notion):
     reply, _ = tasks.apply_edit("готово", [dict(x) for x in TWO], TODAY)
-    assert reply.startswith("Какую задачу — 1, 2?")
+    assert reply.startswith("Какую задачу поправить?")
     assert fake_notion == []
 
 
 def test_apply_deadline_via_llm(monkeypatch, fake_notion):
-    seen = llm_returns(monkeypatch, '{"targets": [2], "action": "deadline", "value": "2026-10-21"}')
+    seen = llm_returns(monkeypatch, edits_json([{"targets": ["A2"], "action": "deadline", "value": "2026-10-21"}]))
     items = [dict(x) for x in TWO]
     reply, items = tasks.apply_edit("2 срок на среду", items, TODAY)
-    assert reply == "Перенесла на ср 21.10 (2) ✨"
+    assert reply == 'Перенесла на ср 21.10 ✨\n• <a href="u">Б</a>'
     assert fake_notion[0] == ("PATCH", "/pages/p2", {"properties": {"Дедлайн": {"date": {"start": "2026-10-21"}}}})
     assert items[1]["deadline"] == "2026-10-21"
     assert "1. А — без срока" in seen[0] and "2. Б — пт 16.10" in seen[0]
+    assert "ОТВЕТИЛ на сообщение A" in seen[0]
 
 
 def test_apply_deadline_with_time(monkeypatch, fake_notion):
-    llm_returns(monkeypatch, '{"targets": [], "action": "deadline", "value": "2026-10-16T15:00"}')
+    llm_returns(monkeypatch, edits_json([{"targets": [], "action": "deadline", "value": "2026-10-16T15:00"}]))
     reply, _ = tasks.apply_edit("на завтра в 15", [dict(x) for x in ONE], TODAY)
-    assert reply == "Перенесла на пт 16.10 15:00 ✨"
+    assert reply.startswith("Перенесла на пт 16.10 15:00 ✨")
     assert fake_notion[0][2]["properties"]["Дедлайн"]["date"]["start"] == "2026-10-16T15:00:00+03:00"
 
 
 def test_apply_rename_and_priority(monkeypatch, fake_notion):
-    llm_returns(monkeypatch, '{"targets": [1], "action": "rename", "value": "Новое имя"}')
+    llm_returns(monkeypatch, edits_json([{"targets": [1], "action": "rename", "value": "Новое имя"}]))
     reply, items = tasks.apply_edit("переименуй в Новое имя", [dict(x) for x in ONE], TODAY)
-    assert reply == "Переименовала в «Новое имя» ✨" and items[0]["title"] == "Новое имя"
-    llm_returns(monkeypatch, '{"targets": [1], "action": "priority", "value": "Срочно"}')
+    assert reply == 'Переименовала ✨\n• <a href="u">Новое имя</a>' and items[0]["title"] == "Новое имя"
+    llm_returns(monkeypatch, edits_json([{"targets": [1], "action": "priority", "value": "Срочно"}]))
     reply, _ = tasks.apply_edit("срочно", [dict(x) for x in ONE], TODAY)
-    assert reply == "Поставила приоритет «Срочно» ✨"
+    assert reply.startswith("Поставила приоритет «Срочно» ✨")
 
 
-@pytest.mark.parametrize("out", ['{"action": "unknown"}', "мусор", RuntimeError("x"),
-                                 '{"targets": [1], "action": "deadline", "value": "в среду"}'])
+@pytest.mark.parametrize("out", ['{"edits": [{"action": "unknown"}]}', "мусор", RuntimeError("x"),
+                                 '{"edits": [{"targets": [1], "action": "deadline", "value": "в среду"}]}',
+                                 '{"edits": [], "tasks": []}'])
 def test_apply_unknown_no_writes(monkeypatch, fake_notion, out):
     llm_returns(monkeypatch, out)
     reply, _ = tasks.apply_edit("что-то непонятное", [dict(x) for x in ONE], TODAY)
@@ -318,6 +324,132 @@ def test_apply_out_of_range_targets(monkeypatch, fake_notion):
     assert fake_notion == []
 
 
+# --- случаи из переписки с Валей (17 и 20.10) ---
+
+def test_strip_name():
+    assert tasks.strip_name("Тейлор, убери эту задачу") == "убери эту задачу"
+    assert tasks.strip_name("тейлор убери") == "убери"
+    assert tasks.strip_name("убери Тейлор") == "убери Тейлор"
+
+
+def test_reply_with_name_is_edit(monkeypatch, fake_notion):
+    """«Тейлор, убери эту задачу» ответом на подтверждение — архив, а не беседа про сайт."""
+    seen = llm_returns(monkeypatch, edits_json([{"targets": ["A1"], "action": "archive", "value": None}]))
+    reply, _ = tasks.process({}, USER, "Тейлор, убери эту задачу", [tasks.make_block("A", [dict(x) for x in ONE])],
+                             now=NOW, is_reply=True)
+    assert reply.startswith("Убрала в архив ✨")
+    assert "Тейлор" not in seen[0].split("<<<")[1].split(">>>")[0]
+    assert fake_notion[0][2]["properties"] == {"Статус": {"status": {"name": "Архив"}}}
+
+
+def test_reply_and_this_one_delete(monkeypatch, fake_notion):
+    """«и эту удали» — не шаблон, решает модель; одна задача в сообщении — она."""
+    llm_returns(monkeypatch, edits_json([{"targets": [], "action": "archive", "value": None}]))
+    reply, _ = tasks.process({}, USER, "и эту удали", [tasks.make_block("A", [dict(x) for x in ONE])],
+                             now=NOW, is_reply=True)
+    assert reply.startswith("Убрала в архив ✨")
+
+
+def test_merge_two_into_one(monkeypatch, fake_notion):
+    """«вот тут это одна задача» на «1. Проверить пробные 2. Согласовать новые»."""
+    items = [{"id": "p1", "url": "u1", "title": "Проверить пробные занятия", "deadline": None},
+             {"id": "p2", "url": "u2", "title": "Согласовать новые занятия", "deadline": "2026-10-20"}]
+    llm_returns(monkeypatch, edits_json([{"targets": ["A1", "A2"], "action": "merge",
+                                          "value": "Проверить пробные занятия: нужно ли согласовать новые"}]))
+    b = tasks.make_block("A", items)
+    reply, new = tasks.process({}, USER, "вот тут это одна задача", [b], now=NOW, is_reply=True)
+    assert reply.startswith("Склеила в одну ✨") and new is None
+    assert fake_notion[0] == ("PATCH", "/pages/p1", {"properties": {
+        "Набор": {"title": [{"text": {"content": "Проверить пробные занятия: нужно ли согласовать новые"}}]},
+        "Дедлайн": {"date": {"start": "2026-10-20"}}}})
+    assert fake_notion[1] == ("PATCH", "/pages/p2", {"properties": {"Статус": {"status": {"name": "Архив"}}}})
+    assert b["items"][0]["title"].startswith("Проверить пробные занятия: нужно")
+
+
+def test_complaint_without_reply_is_not_a_task(monkeypatch, fake_notion):
+    """«ты записала это как 2 задачи, а это 1 задача» без ответа — склейка последнего подтверждения."""
+    items = [{"id": "p1", "url": "u1", "title": "Проверить пробные занятия", "deadline": None},
+             {"id": "p2", "url": "u2", "title": "Согласовать новые занятия", "deadline": None}]
+    llm_returns(monkeypatch, edits_json([{"targets": [], "action": "merge", "value": "Проверить пробные"}]))
+    reply, new = tasks.process({}, USER, "ты записала это как 2 задачи, а это 1 задача",
+                               [tasks.make_block("A", items)], now=NOW)
+    assert reply.startswith("Склеила в одну") and new is None
+    assert all(c[1] != "/pages" for c in fake_notion)          # новых страниц нет
+
+
+def test_many_dones_without_reply(monkeypatch, fake_notion):
+    """«1 готово / 2 готово / 3 готово / 4 готово» после сводки — закрыть четыре, не новая задача."""
+    items = [{"id": "p%d" % i, "url": "u%d" % i, "title": "Т%d" % i, "deadline": None} for i in range(1, 6)]
+    seen = llm_returns(monkeypatch, edits_json([{"targets": ["1", "2", "3", "4"], "action": "done", "value": None}]))
+    blocks = [tasks.make_block("A", items, mid="98", label="утренняя сводка, 21.10 10:00, самое свежее")]
+    reply, new = tasks.process({}, USER, "1 готово\n2 готово\n3 готово\n4 готово", blocks, now=NOW)
+    assert new is None and reply.count("• ") == 4
+    assert [c[1] for c in fake_notion] == ["/pages/p1", "/pages/p2", "/pages/p3", "/pages/p4"]
+    assert "Блок A — утренняя сводка" in seen[0]
+
+
+def test_new_task_and_edit_in_one_message(monkeypatch, fake_notion):
+    llm_returns(monkeypatch, edits_json([{"targets": ["A1"], "action": "done", "value": None}],
+                                        [{"title": "Позвонить Кате", "deadline": None}]))
+    reply, new = tasks.process({}, USER, "1 готово, и ещё позвонить Кате",
+                               [tasks.make_block("A", [dict(x) for x in ONE])], now=NOW)
+    assert reply.startswith("Закрыла ✨") and "Записала ✨" in reply
+    assert new[0]["title"] == "Позвонить Кате"
+
+
+def test_thanks_is_silent(monkeypatch, fake_notion):
+    llm_returns(monkeypatch, edits_json([]))
+    reply, new = tasks.process({}, USER, "спасибо", [tasks.make_block("A", [dict(x) for x in ONE])], now=NOW)
+    assert reply == "" and new is None and fake_notion == []
+
+
+def test_llm_down_without_reply_keeps_task(monkeypatch, fake_notion):
+    llm_returns(monkeypatch, RuntimeError("x"))
+    reply, new = tasks.process({}, USER, "Позвонить Кате", [], now=NOW)
+    assert new and new[0]["title"] == "Позвонить Кате"
+
+
+def test_question_passed_through(monkeypatch, fake_notion):
+    llm_returns(monkeypatch, edits_json([], question="Какую закрыть — «А» или «Б»?"))
+    reply, _ = tasks.process({}, USER, "закрой её", [tasks.make_block("A", [dict(x) for x in TWO])], now=NOW)
+    assert reply == "Какую закрыть — «А» или «Б»?" and fake_notion == []
+
+
+def test_link_block_from_memory_and_notion(monkeypatch):
+    state = {"msgs": {"5": {"ts": 1, "items": [
+        {"id": "3ff612c7-62af-81df-9b45-fde6f6feb4ff", "url": "x", "title": "1 готово 2 готово", "deadline": None}]}}}
+    calls = []
+
+    def notion(method, path, body=None, tries=3):
+        calls.append(path)
+        if path.endswith("aaaa"):
+            return {"id": "p-aaaa", "url": "ua", "parent": {"database_id": "aefa741e-a95f-49da-9381-e9cbaba55c81"},
+                    "properties": {"Набор": {"title": [{"plain_text": "Из Notion"}]}}}
+        return {"id": "p-x", "parent": {"database_id": "другая"}}
+    monkeypatch.setattr(tasks, "notion", notion)
+    text = ("https://app.notion.com/p/1-2-3-4-3ff612c762af81df9b45fde6f6feb4ff и "
+            "https://www.notion.so/Zadacha-" + "1" * 28 + "aaaa и https://www.notion.so/" + "2" * 32)
+    b = tasks.link_block(state, text)
+    assert b["key"] == "L" and [it["title"] for it in b["items"]] == ["1 готово 2 готово", "Из Notion"]
+    assert len(calls) == 2                       # из памяти — без запроса; чужая база отброшена
+
+
+def test_recent_blocks_order_and_window(monkeypatch):
+    now = 1_000_000.0
+    item = [{"id": "p", "url": "u", "title": "Т", "deadline": None}]
+    state = {"msgs": {
+        "1": {"ts": now - 3600, "uid": 7, "kind": "digest", "items": item},
+        "2": {"ts": now - 60, "uid": 7, "kind": "confirm", "items": item},
+        "3": {"ts": now - 30, "uid": 8, "kind": "confirm", "items": item},       # чужое
+        "4": {"ts": now - 20 * 3600, "uid": 7, "kind": "confirm", "items": item},  # старое
+        "5": {"ts": now - 10, "kind": "digest", "items": item},                 # без uid
+    }}
+    bl = tasks.recent_blocks(state, 7, now_ts=now)
+    assert [b["mid"] for b in bl] == ["2", "1"] and bl[0]["key"] == "A"
+    assert "самое свежее" in bl[0]["label"] and "подтверждение" in bl[0]["label"]
+    assert [b["mid"] for b in tasks.recent_blocks(state, 7, only_user=True, now_ts=now)] == ["5", "2", "1"]
+
+
 # --- память о сообщениях ---
 
 def test_remember_recall_and_prune(monkeypatch):
@@ -326,3 +458,12 @@ def test_remember_recall_and_prune(monkeypatch):
     assert tasks.recall(state, 42) == [{"id": "p", "url": "u", "title": "Т", "deadline": None}]
     assert "1" not in state["msgs"]
     assert tasks.recall(state, 999) is None
+
+
+def test_remember_keeps_ts_uid_kind_on_update(monkeypatch):
+    state = {}
+    tasks.remember(state, 42, [{"id": "p", "title": "Т"}], uid=7, kind="digest")
+    ts = state["msgs"]["42"]["ts"]
+    tasks.remember(state, 42, [{"id": "p", "title": "Новое"}])
+    m = state["msgs"]["42"]
+    assert (m["ts"], m["uid"], m["kind"], m["items"][0]["title"]) == (ts, 7, "digest", "Новое")
