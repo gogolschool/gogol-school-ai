@@ -24,6 +24,7 @@
 - Разбор помеченных записей экономики (доп.комментарий) и решения по P&L → skill [`/check-economics`](skills/check-economics/SKILL.md) (агент «Егор Крид»; закрывает флаги, которые ставит `/bank`)
 - Заведение нового договора → skill [`/newcontract`](skills/newcontract/SKILL.md)
 - Проверка справки об оплате обучения (налоговый вычет) → skill [`/tax-cert`](skills/tax-cert/SKILL.md)
+- Счёт поставщика к оплате в интернет-банке (реквизиты блоками для копирования, плательщик ООО/ИП, ловушки НДС и УИП, сверка скрина платёжки) → skill [`/pay-invoice`](skills/pay-invoice/SKILL.md)
 - Создание/корректировка транзакции в `fin.transactions`
 - Сверка платежа: заказ Bitrix → транзакция Ozma → заявка `crm.actions_for_contacts`
 - Запросы на возврат: `crm.refund_requests` → транзакция возврата через `fin.make_refund`
